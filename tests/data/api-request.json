@@ -1,0 +1,18 @@
+{
+  "directoryID": "0xE4B250177588042218B1644c9C0AcFc74e96320B",
+  "userType": "provider",
+  "userID": "provider1",
+  "password": "1111",
+  "offerPrice": "100",
+  "dueDate": "1554087447123",
+  "dataCertificate": "49b45u9gm9042mg04b24jbj2=bj2=bj",
+  "dataOwner": "djv24-vj8942-49hv2hv58924vh-fv294v",
+  "dataDescription": "pneumonia",
+  "dataAccessPath": "https://directory/test/sql",
+  "expirationDate": "15644811646",
+  "providerAgreement": "I agree, by provider.",
+  "consumerAgreement": "I agree, by consumer.",
+  "EASID": "0x65Db2Ac5374bF840eCaa45f1Fc607B4c85D045D2",
+  "invocationLog": "Someone sends request to me, wow!?",
+  "index": "0"
+}

@@ -1,0 +1,14 @@
+{
+  "CreateNewDirectory": "/directory/new/",
+  "UserRegistration": "/user/register/",
+  "DataEntryCreation": "/entry/create/",
+  "DataEntryDeletion": "/entry/delete/",
+  "EASDeployment": "/eas/deploy/",
+  "EASInvocation": "/eas/invoke/",
+  "EASRevocation": "/eas/revoke/",
+  "DataEntryCount": "/entry/count/",
+  "DataEntryRetrievalByIndex": "/entry/index/",
+  "DataEntryRetrievalByDataCertificate": "/entry/dctf/",
+  "EASRetrieval": "/eas/sid/",
+  "RetriveLocalDatabase": "/database/local/"
+}

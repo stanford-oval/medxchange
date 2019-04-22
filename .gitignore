@@ -1,0 +1,9 @@
+node_modules/
+package-lock.json
+.DS_Store
+.nyc_output/
+storages/UTC*
+nodes/
+storages/registrationDatabase.sqlite3
+tests/data/config.json
+controllers/dxservice-config.json
