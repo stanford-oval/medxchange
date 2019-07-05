@@ -28,7 +28,7 @@ $ npm install
 $ npm start
 ```
 
-## Opening the Webpage with a Web Browser
+## Opening the Webpage using Web Browser
 ```
 https://(localhost or IP):9000
 ```
