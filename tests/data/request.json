@@ -1,18 +1,81 @@
 {
-  "directoryID": "0xE4B250177588042218B1644c9C0AcFc74e96320B",
-  "userType": "provider",
-  "userID": "provider1",
-  "password": "1111",
-  "offerPrice": "100",
-  "dueDate": "1554087447123",
-  "dataCertificate": "49b45u9gm9042mg04b24jbj2=bj2=bj",
-  "dataOwner": "djv24-vj8942-49hv2hv58924vh-fv294v",
-  "dataDescription": "pneumonia",
-  "dataAccessPath": "https://directory/test/sql",
-  "expirationDate": "15644811646",
+  "provider": [{
+      "userType": "provider",
+      "userID": "provider1",
+      "userPassword": "1111",
+      "userAddress": "0x9014fa6e81ecf8d81af8b1a0965ed63f41c2bfe8",
+      "userPrivateKey": "0x60537146b2f357fbab896633079d10061b3a567bbd3ae46fa4c1820717c12adc"
+    },
+    {
+      "userType": "provider",
+      "userID": "provider2",
+      "userPassword": "1111",
+      "userAddress": "0xc8f91626082e3b30c7019d53052beafad537e828",
+      "userPrivateKey": "0xb56f9e1d8ab809009fa3e1cee7d5b43bc50a15d840bb0b448fcbc367d0d6a0c0"
+    }
+  ],
+  "consumer": [{
+      "userType": "consumer",
+      "userID": "consumer1",
+      "userPassword": "1111",
+      "userAddress": "0x9379cfca25b87f1607ca8c43fe84d97908e1e5dd",
+      "userPrivateKey": "0xa034e809498d2fc368de6d4b1e22fd4be0aeab8b5debc236eaf3fa53c3024ea5"
+    },
+    {
+      "userType": "consumer",
+      "userID": "consumer2",
+      "userPassword": "1111",
+      "userAddress": "0x9e0d7090dea6f7cb7bec608e7a861b12174af0fe",
+      "userPrivateKey": "0x847db5c6fc3f8ee697fd96a22f3fd3a57d905fe21b5f34dcfd61be68350b23c2"
+    }
+  ],
+  "auditor": [{
+    "userType": "auditor",
+    "userID": "auditor1",
+    "userPassword": "1111",
+    "userAddress": "0x847db5c6fcb87f1607ca8c43fe84d97908e1e5dd",
+    "userPrivateKey": "0x9e0d7090de8d2fc368de6d4b1e22fd4be0aeab8b5debc236eaf3fa53c3024ea5"
+  }],
   "providerAgreement": "I agree, by provider.",
   "consumerAgreement": "I agree, by consumer.",
-  "EASID": "0x65Db2Ac5374bF840eCaa45f1Fc607B4c85D045D2",
   "invocationLog": "Someone sends request to me, wow!?",
-  "index": "0"
+  "index": "0",
+  "dataEntry": [{
+      "dataOfferPrice": "100",
+      "dataEntryDueDate": "1954087447",
+      "dataEntryTitle": "pneumonia",
+      "dataCertificate": "49b45u9gm9042mg04b24jbj2=bj2=bj",
+      "dataOwnerCode": "djv24-vj8942-49hv2hv58924vh-fv294v",
+      "dataDescription": "pneumonia headache ...",
+      "dataAccessPath": "https://directory/test/sql",
+      "dataSummary": {
+        "dataEntryTitle": "pneumonia",
+        "dataCertificate": "49b45u9gm9042mg04b24jbj2=bj2=bj",
+        "dataOwnerCode": "djv24-vj8942-49hv2hv58924vh-fv294v",
+        "dataDescription": "pneumonia headache ...",
+        "dataAccessPath": "https://directory/test/sql",
+        "ageLowerBound":"1",
+        "ageUpperBound":"119",
+        "gender":"Male"
+      }
+    },
+    {
+      "dataOfferPrice": "199",
+      "dataEntryDueDate": "1994024851",
+      "dataEntryTitle": "paranoia",
+      "dataCertificate": "92z45g2wn4259dh18k04ebw4=rx5=14",
+      "dataOwnerCode": "djv24-vj8942-49hv2hv58924vh-fv294v",
+      "dataDescription": "paranoia  ...",
+      "dataAccessPath": "https://directory/test/sql2",
+      "dataSummary": {
+        "dataEntryTitle": "paranoia",
+        "dataCertificate": "92z45g2wn4259dh18k04ebw4=rx5=14",
+        "dataOwnerCode": "djv24-vj8942-49hv2hv58924vh-fv294v",
+        "dataDescription": "paranoia  ...",
+        "dataAccessPath": "https://directory/test/sql2"
+      }
+    }
+  ],
+  "dataEntryCreationDate": ["1465448848", "1465448858", "1465448868", "1465448878", "1465448888"],
+  "url": "https://localhost:5566"
 }

@@ -18,208 +18,159 @@
 //
 // Author: Alison Lin <yslin1013@gmail.com>
 //         Wesley Liu <Wesley_Liu@htc.com>
+
 "use strict";
 
 const Web3 = require('web3');
 const util = require('util');
-const fs = require('fs');
-const debug = require('debug')('dxserver:eth-dxservice');
-const stack = require('debug')('dxserver-stack:eth-dxservice');
+const rlp = require('rlp');
+const debug = require('debug')('medx-server:eth-dxservice');
+const stack = require('debug')('medx-server-stack:eth-dxservice');
+const moment = require('moment');
+const transactionConfig = require('./transaction-config.json');
 
-const SQLiteDatabase = require('./sqlite-database');
-const providerDatabase = new SQLiteDatabase.RegistrationDatabase('provider');
-const consumerDatabase = new SQLiteDatabase.RegistrationDatabase('consumer');
+const medxDatabase = require('./database');
 
-module.exports = class DXserver {
-  constructor(config) {
+module.exports = class MedXserver {
+  constructor(config, socketServer = {}) {
+    this.socketServer = socketServer;
     this._config = config;
-    this._web3 = new Web3(new Web3.providers.HttpProvider(config.ETHRPC_IP_PORT));
-  }
-
-  /*
-    POST /directory/new/
-      --> CreateNewDirectory()
-        --> unlockEthAccount()
-        --> _createNewDirectory()
-        --> Contract.deploy() --> [ETHEREUM]
-        --> result = { message, txHash, directoryID };
-  */
-  async CreateNewDirectory() {
-    try {
-      await this.unlockEthAccount(this._config.COINBASE_ACCOUNT, this._config.PASSPHRASE);
-      const result = await this._createNewDirectory(this._web3);
-      debug('CreateNewDirectory(1): ' + util.inspect(result));
-      return result;
-    } catch (error) {
-      debug('CreateNewDirectory(2): ' + (error.message));
-      stack('CreateNewDirectory(2): ' + (error.stack || error));
-      throw Error(error);
-    }
+    this._web3 = new Web3(new Web3.providers.WebsocketProvider(config.ETHWS_IP_PORT));
+    this.directoryID = config.Directory.CONTRACT_ADDR;
+    this.UR_Database = new medxDatabase.UserRegistration(config.UR_dbPath);
+    this.DIR_Database = new medxDatabase.DataDirectory(config.DIR_dbPath);
+    this.AGR_Database = new medxDatabase.DataEntryAgreement(config.AGR_dbPath);
+    this.EAS_Database = new medxDatabase.ExecutableAgreementScript(config.EAS_dbPath);
+    this.EASI_Database = new medxDatabase.EASInvocation(config.EASI_dbPath);
+    this.ATL_Database = new medxDatabase.AuditTrailLog(config.ATL_dbPath);
+    this.SF_Datebase = new medxDatabase.SmartFilter(config.SF_dbPath);
+    this.deleteDueEntry = this.deleteDueEntry.bind(this);
+    this.revokeExpiredEAS = this.revokeExpiredEAS.bind(this);
   }
 
   /*
     POST /user/register/
       --> UserRegistration()
-        --> checkRegistrationFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> checkContractExist()
-            --> connectAndAccessDirectoryContract()
-                --> (provider)
-                  --> checkUserIdExist()
-                  --> checkUserExistByUserId() --> [DATABASE]
-                  --> (user does not exist)
-                    --> createNewEthAccount()
-                    --> unlockEthAccount()
-                    --> _registerProvider()
-                    --> contract.methods.registerProvider --> [ETHEREUM]
-                    --> _sendETHToUser()
-                    --> storeUserAccountInLocal()
-                    --> result = { message };
-                  --> (user exists)
-                    --> error = 'user is already registered.'
-                --> (consumer)
-                  --> (user does not exist)
-                    --> createNewEthAccount()
-                    --> unlockEthAccount()
-                    --> _registerConsumer()
-                    --> contract.methods.registerConsumer --> [ETHEREUM]
-                    --> _sendETHToUser()
-                    --> storeUserAccountInLocal()
-                    --> result = { message };
-                  --> (user exists)
-                    --> error = 'userID is already registered.'
-                --> (otherwise)
-                  --> error = 'user type is not defined.'
   */
   async UserRegistration(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.userType === '' || request.userType === undefined) {
-      throw Error('userType is not defined.');
-    } else if (request.userID === '' || request.userID === undefined) {
-      throw Error('userID is not defined.');
-    } else if (request.password === '' || request.password === undefined) {
-      throw Error('password is not defined.');
-    } else {
-      try {
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        if (request.userType === 'provider') {
-          if (!await this.checkUserIdExist(request)) {
-            let newUserAddress = await this.createNewEthAccount(request);
+    debug('UserRegistration(0): ' + util.inspect(request));
+    try {
+      // Step1: check whether the data directory exists
+      if (await this.checkContractExist(this.directoryID)) {
+        // Step2: retrieve the data directory contract instance
+        const contract = await this.accessContract('Directory', this.directoryID);
+        // Step3: check whether the incoming user acccount exists
+        if (!await this.checkUserExist(request)) {
+          let DBresult, DTLresult, ATLresult, LOGresult = {};
+          if (request.userType === 'provider' || request.userType === 'consumer') {
+            // Step4a: unlock admin account to send UR-TX
             await this.unlockEthAccount(this._config.COINBASE_ACCOUNT, this._config.PASSPHRASE);
-            let result = await this._registerProvider(contract, newUserAddress, request.userID);
-            debug('UserRegistration(1): ' + util.inspect(result));
-            await this._sendETHToUser(this._web3, newUserAddress, '10000');
-            result = await this.storeUserAccountInLocal(request, newUserAddress);
-            debug('UserRegistration(2): ' + util.inspect(result));
-            return result;
+            // Step5a: send UR-TX to Ethereum
+            DTLresult = await this._register(request.userType === 'provider', contract, request.userID, request.userAddress);
+            // Step6a: write user (provider or consumer) account information to DB
+            request.userAddress = request.userAddress.toLowerCase();
+            DBresult = await this.UR_Database.writeUserInformation(this.directoryID, request.userType, request, DTLresult.data.txHash);
+            debug('UserRegistration(1): ' + util.inspect(DTLresult));
+            debug('UserRegistration(1): ' + util.inspect(DBresult));
+            LOGresult.message = DTLresult.message;
+            LOGresult.txHash = DTLresult.data.txHash;
+          } else if (request.userType === 'auditor') {
+            // Step4b: write user (auditor) account information to DB
+            DBresult = await this.UR_Database.writeUserInformation(this.directoryID, request.userType, request);
+            debug('UserRegistration(2): ' + util.inspect(DBresult));
+            LOGresult.message = DBresult.message;
+            LOGresult.txHash = '0x0000000000000000000000000000000000000000000000000000000000000000';
           } else {
-            debug('UserRegistration(3): ' + 'This userID is already registered as a provider.');
-            throw Error('The userID is already registered as a provider.');
+            debug('UserRegistration(3): ' + 'The userType is not defined.');
+            throw Error('The userType is not defined.');
           }
-        } else if (request.userType === 'consumer') {
-          if (!await this.checkUserIdExist(request)) {
-            let newUserAddress = await this.createNewEthAccount(request);
-            await this.unlockEthAccount(this._config.COINBASE_ACCOUNT, this._config.PASSPHRASE);
-            let result = await this._registerConsumer(contract, newUserAddress, request.userID);
-            debug('UserRegistration(4): ' + util.inspect(result));
-            await this._sendETHToUser(this._web3, newUserAddress, '100');
-            result = await this.storeUserAccountInLocal(request, newUserAddress);
-            debug('UserRegistration(5): ' + util.inspect(result));
-            return result;
-          } else {
-            debug('UserRegistration(6): ' + 'This userID is already registered as a consumer.');
-            throw Error('The userID is already registered as a consumer.');
-          }
+          // Step7: write audit trail log with the UR-TX to DB
+          ATLresult = await this.ATL_Database.writeAuditTrailLog(
+            this.directoryID,
+            undefined,
+            new Date(),
+            LOGresult.message,
+            LOGresult.txHash
+          );
+          debug('UserRegistration(4): ' + util.inspect(ATLresult));
+          return DBresult;
         } else {
-          debug('UserRegistration(7): ' + 'The userType is not defined.');
-          throw Error('The userType is not defined.');
+          debug('UserRegistration(5): ' + 'The user has been registered.');
+          throw Error('The user has been registered.');
         }
-      } catch (error) {
-        debug('UserRegistration(8): ' + (error.message));
-        stack('UserRegistration(8): ' + (error.stack || error));
-        throw Error(error);
+      } else {
+        debug('UserRegistration(6): ' + 'The directory ID does not exist.');
+        throw Error('The directory ID does not exist.');
       }
+    } catch (error) {
+      debug('UserRegistration(7): ' + (error.message));
+      stack('UserRegistration(7): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  /*
+    POST /user/login/
+      --> UserLogin()
+  */
+  async UserLogin(request) {
+    debug('checkUserPassword(0): ' + util.inspect(request));
+    try {
+      // Step1: check the hashed user password for login authentication
+      const result = await this.UR_Database.checkUserPassword(this.directoryID, request.userType, request);
+      debug('checkUserPassword(1): ' + util.inspect(result));
+      // Step2: write audit trail log with the login result to DB
+      const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+        this.directoryID,
+        undefined,
+        new Date(),
+        result.message,
+        JSON.stringify(result.data)
+      );
+      debug('checkUserPassword(1): ' + util.inspect(LOGresult));
+      return result;
+    } catch (error) {
+      debug('checkUserPassword(2): ' + (error.message));
+      stack('checkUserPassword(2): ' + (error.stack || error));
+      throw Error(error.message);
     }
   }
 
   /*
     POST /entry/create/
       --> DataEntryCreation()
-        --> checkCreationFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> *set user type to provider
-            --> checkContractExist()
-            --> connectAndAccessDirectoryContract()
-              --> checkUserIdExist()
-              --> checkUserExistByUserId() --> [DATABASE]
-                --> (user exists)
-                  --> contract.methods.getDataEntryLocationByCertificate()
-                    --> (data entry does not exist)
-                      --> providerDatabase.retrieveUserAddressByDirectoryIdUserId() --> [DATABASE]
-                      --> unlockEthAccount()
-                      --> _createDataEntry()
-                      --> contract.methods.createDataEntry() --> [ETHEREUM]
-                      --> result = { message, txHash };
-                    --> (data entry exists)
-                      --> error = 'data certificate has been used.'
-                --> (user does not exist)
-                  --> error = 'user ID is not registered.'
   */
   async DataEntryCreation(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.userID === '' || request.userID === undefined) {
-      throw Error('userID is not defined.');
-    } else if (request.password === '' || request.password === undefined) {
-      throw Error('password is not defined.');
-    } else if (request.offerPrice === '' || request.offerPrice === undefined) {
-      throw Error('offerPrice is not defined.');
-    } else if (request.dueDate === '' || request.dueDate === undefined) {
-      throw Error('dueDate is not defined.');
-    } else if (request.dataCertificate === '' || request.dataCertificate === undefined) {
-      throw Error('dataCertificate is not defined.');
-    } else if (request.dataOwner === '' || request.dataOwner === undefined) {
-      throw Error('dataOwner is not defined.');
-    } else if (request.dataDescription === '' || request.dataDescription === undefined) {
-      throw Error('dataDescription is not defined.');
-    } else if (request.dataAccessPath === '' || request.dataAccessPath === undefined) {
-      throw Error('accessPath is not defined.');
-    } else {
-      try {
-        request.userType = 'provider';
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        if (await this.checkUserIdExist(request)) {
-          let dataEntryExist = await contract.methods.getDataEntryLocationByCertificate(request.dataCertificate).call();
-          if (dataEntryExist === '115792089237316195423570985008687907853269984665640564039457584007913129639935') {
-            debug('dataEntryExist: ' + dataEntryExist);
-            let account = await providerDatabase.retrieveUserAddressByDirectoryIdUserId(request.directoryID, request.userID);
-            let userAddress = account[0].userAddress;
-            let passphrase = request.userID + request.password;
-            await this.unlockEthAccount(userAddress, passphrase);
-            const description = {
-              "dataOwner": request.dataOwner,
-              "dataCertificate": request.dataCertificate,
-              "dataDescription": request.dataDescription,
-              "dataAccessPath": request.dataAccessPath
-            };
-            debug('DataEntryCreation(1)(description): ' + JSON.stringify(description));
-            let result = await this._createDataEntry(
-              contract,
-              userAddress,
-              request.offerPrice,
-              request.dataCertificate,
-              JSON.stringify(description),
-              request.dueDate
+    debug('DataEntryCreation(0): ' + util.inspect(request));
+    try {
+      // Step1: parse signed transaction
+      let signedTX = await this.parseSignedTX(request);
+      signedTX.data.userType = 'provider';
+      // Step2: check whether the data directory exists
+      if (await this.checkContractExist(this.directoryID) && signedTX.data.to === this.directoryID.toLowerCase().slice(2)) {
+        // Step3: retrieve incoming user account
+        const account = await this.UR_Database.retrieveByConditions(this.directoryID, 'provider', signedTX.data);
+        signedTX.data.userID = account.data[0].userID;
+        // Step4: check whether the incoming user acccount exists
+        if (account.data.length) {
+          // Step5: check whether the data entry exists by data certificate
+          const dataEntry = await this.DIR_Database.retrieveByConditions(this.directoryID, { dataKey: signedTX.data.decodedTransaction.dataKey }, { checkDueDate: true });
+          if (!dataEntry.data.length) {
+            // Step6: send DEC-TX to Ethereum
+            const DTLresult = await this._sendSignedTX('DEC', JSON.parse(request.signedTX).rawTransaction);
+            const DBresult = await this.writeTransactionData(signedTX.data, DTLresult.data.txHash);
+            debug('DataEntryCreation(1): ' + util.inspect(DTLresult));
+            debug('DataEntryCreation(1): ' + util.inspect(DBresult));
+            // Step7: write audit trail log with the DEC-TX to DB
+            const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+              this.directoryID,
+              JSON.parse(signedTX.data.decodedTransaction.dataSummary).dataCertificate,
+              new Date(),
+              DTLresult.message,
+              DTLresult.data.txHash
             );
-            debug('DataEntryCreation(2): ' + util.inspect(result));
-            return result;
+            debug('DataEntryCreation(2): ' + util.inspect(LOGresult));
+            return DBresult;
           } else {
             debug('DataEntryCreation(3): ' + 'The data certificate has been used.');
             throw Error('The data certificate has been used.');
@@ -228,78 +179,50 @@ module.exports = class DXserver {
           debug('DataEntryCreation(4): ' + 'The userID is not registered as a provider.');
           throw Error('The userID is not registered as a provider.');
         }
-      } catch (error) {
-        debug('DataEntryCreation(5): ' + (error.message));
-        stack('DataEntryCreation(5): ' + (error.stack || error));
-        throw Error(error);
+      } else {
+        debug('DataEntryCreation(5): ' + 'The directory ID does not exist.');
+        throw Error('The directory ID does not exist.');
       }
+    } catch (error) {
+      debug('DataEntryCreation(6): ' + (error.message));
+      stack('DataEntryCreation(6): ' + (error.stack || error));
+      throw Error(error.message);
     }
   }
 
-  /*
-    POST /entry/delete/
-      --> DataEntryDeletion()
-        --> checkCreationFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> *set user type to provider
-            --> checkContractExist()
-            --> connectAndAccessDirectoryContract()
-              --> checkUserIdExist()
-              --> checkUserExistByUserId() --> [DATABASE]
-                --> (user exists)
-                  --> contract.methods.getDataEntryLocationByCertificate()
-                    --> (data entry does not exist)
-                      --> error = 'Wrong data certificate: the data entry does not exist.'
-                    --> (data entry exists)
-                      --> providerDatabase.retrieveUserAddressByDirectoryIdUserId() --> [DATABASE]
-                      --> contract.methods.getDataEntryInfoByCertificate()
-                      --> (user address is the data provider of the entry)
-                        --> contract.methods.getDataEntryAdditionInfoByCertificate()
-                        --> (the data entry is not deleted)
-                          --> unlockEthAccount()
-                          --> _deleteDataEntry()
-                          --> contract.methods.deleteDataEntry() --> [ETHEREUM]
-                          --> result = { message, txHash };
-                        --> (the data entry is deleted)
-                          --> error = 'The data entry  has been deleted.'
-                      --> (user address is not the data provider of the entry)
-                        --> error = 'The userID is not the data provider of the entry.'
-                --> (user does not exist)
-                  --> error = 'The userID is not registered as a provider.'
-  */
   async DataEntryDeletion(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.userID === '' || request.userID === undefined) {
-      throw Error('userID is not defined.');
-    } else if (request.password === '' || request.password === undefined) {
-      throw Error('password is not defined.');
-    } else if (request.dataCertificate === '' || request.dataCertificate === undefined) {
-      throw Error('dataCertificate is not defined.');
-    } else {
-      try {
-        request.userType = 'provider';
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        if (await this.checkUserIdExist(request)) {
-          let dataEntryExist = await contract.methods.getDataEntryLocationByCertificate(request.dataCertificate).call();
-          if (dataEntryExist === '115792089237316195423570985008687907853269984665640564039457584007913129639935') {
-            debug('DataEntryDeletion(1): ' + 'Wrong data certificate: the data entry does not exist.');
-            throw Error('Wrong data certificate: the data entry does not exist.');
-          } else {
-            let account = await providerDatabase.retrieveUserAddressByDirectoryIdUserId(request.directoryID, request.userID);
-            let userAddress = account[0].userAddress;
-            let dataEntryInfo = await contract.methods.getDataEntryInfoByCertificate(request.dataCertificate).call();
-            if (userAddress === dataEntryInfo[0]) {
-              let dataEntryAdditionInfo = await contract.methods.getDataEntryAdditionInfoByCertificate(request.dataCertificate).call();
-              if (dataEntryAdditionInfo[0]) {
-                let passphrase = request.userID + request.password;
-                await this.unlockEthAccount(userAddress, passphrase);
-                let result = await this._deleteDataEntry(contract, userAddress, request.dataCertificate);
-                debug('DataEntryDeletion(2): ' + util.inspect(result));
-                return result;
+    debug('DataEntryDeletion(0): ' + util.inspect(request));
+    try {
+      // Step1: parse signed transaction
+      let signedTX = await this.parseSignedTX(request);
+      // Step2: check whether the data directory exists
+      if (await this.checkContractExist(this.directoryID) && signedTX.data.to === this.directoryID.toLowerCase().slice(2)) {
+        // Step3: check whether the incoming user acccount exists
+        signedTX.data.userType = 'provider';
+        if (await this.checkUserExist(signedTX.data)) {
+          // Step5: retrieve data entry by data certificate
+          const dataEntry = await this.DIR_Database.retrieveByConditions(this.directoryID, { dataKey: signedTX.data.decodedTransaction.dataKey }, { checkDueDate: false });
+          // Step4: check whether the data entry exists by data certificate
+          if (dataEntry.data.length) {
+            debug('DataEntryDeletion(1): ' + util.inspect(dataEntry));
+            debug('DataEntryDeletion(1): ' + util.inspect(signedTX.data.userAddress));
+            if (signedTX.data.userAddress === dataEntry.data[0].dataProviderAddress) {
+              if (dataEntry.data[0].isOffered) {
+                // Step7: send DED-TX to Ethereum
+                const DTLresult = await this._sendSignedTX('DED', JSON.parse(request.signedTX).rawTransaction);
+                const DBresult = await this.writeTransactionData(signedTX.data, DTLresult.data.txHash);
+                debug('DataEntryDeletion(2): ' + util.inspect(DTLresult));
+                debug('DataEntryDeletion(2): ' + util.inspect(DBresult));
+                // Step8: write audit trail log with the DED-TX to DB
+                const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+                  this.directoryID,
+                  dataEntry.data[0].dataCertificate,
+                  new Date(),
+                  DTLresult.message,
+                  DTLresult.data.txHash
+                );
+                debug('DataEntryDeletion(2): ' + util.inspect(LOGresult));
+                return DBresult;
               } else {
                 debug('DataEntryDeletion(3): ' + 'The data entry has been deleted.');
                 throw Error('The data entry has been deleted.');
@@ -308,747 +231,1066 @@ module.exports = class DXserver {
               debug('DataEntryDeletion(4): ' + 'The userID is not the data provider of the entry.');
               throw Error('The userID is not the data provider of the entry.');
             }
-          }
-        } else {
-          debug('DataEntryDeletion(5): ' + 'The userID is not registered as a provider.');
-          throw Error('The userID is not registered as a provider.');
-        }
-      } catch (error) {
-        debug('DataEntryDeletion(6): ' + (error.message));
-        stack('DataEntryDeletion(7): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  /*
-    POST /eas/deploy/
-      --> EASDeployment()
-        --> checkDeploymentFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> *set user type to consumer
-            --> checkContractExist()
-            --> connectAndAccessDirectoryContract()
-              --> checkUserIdExist()
-              --> checkUserExistByUserId() --> [DATABASE]
-                --> (user exists)
-                  --> contract.methods.getDataEntryLocationByCertificate()
-                    --> (data entry does not exist)
-                      --> error = 'data entry does not exist.'
-                    --> (data entry exists)
-                      --> consumerDatabase.retrieveUserAddressByDirectoryIdUserId() --> [DATABASE]
-                      --> unlockEthAccount()
-                      --> _deployEAS()
-                      --> contract.methods.deployEAS() --> [ETHEREUM]
-                      --> contract.methods.getConsumerEASLocation() --> [ETHEREUM]
-                      --> contract.methods.getDataEntryEASAddress() --> [ETHEREUM]
-                      --> result = { message, txHash, EASID };
-                --> (user does not exist)
-                  --> error = 'user ID is not registered.'
-  */
-  async EASDeployment(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.userID === '' || request.userID === undefined) {
-      throw Error('userID is not defined.');
-    } else if (request.dataCertificate === '' || request.dataCertificate === undefined) {
-      throw Error('dataCertificate is not defined.');
-    } else if (request.expirationDate === '' || request.expirationDate === undefined) {
-      throw Error('expirationDate is not defined.');
-    } else if (request.providerAgreement === '' || request.providerAgreement === undefined) {
-      throw Error('providerAgreement is not defined.');
-    } else if (request.consumerAgreement === '' || request.consumerAgreement === undefined) {
-      throw Error('consumerAgreement is not defined.');
-    } else {
-      try {
-        request.userType = 'consumer';
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        if (await this.checkUserIdExist(request)) {
-          let dataEntryExist = await contract.methods.getDataEntryLocationByCertificate(request.dataCertificate).call();
-          if (dataEntryExist === '115792089237316195423570985008687907853269984665640564039457584007913129639935') {
-            debug('DataEntryCreation(1): ' + 'Wrong data certificate: the data entry does not exist.');
+          } else {
+            debug('DataEntryDeletion(5): ' + 'Wrong data certificate: the data entry does not exist.');
             throw Error('Wrong data certificate: the data entry does not exist.');
-          } else {
-            let account = await consumerDatabase.retrieveUserAddressByDirectoryIdUserId(request.directoryID, request.userID);
-            let userAddress = account[0].userAddress;
-            await this.unlockEthAccount(this._config.COINBASE_ACCOUNT, this._config.PASSPHRASE);
-            let result = await this._deployEAS(
-              contract,
-              userAddress,
-              request.expirationDate,
-              request.dataCertificate,
-              request.providerAgreement,
-              request.consumerAgreement
-            );
-            debug('EASDeployment(2): ' + util.inspect(result));
-            let EASSN = await contract.methods.getConsumerEASLocation(request.dataCertificate, userAddress).call();
-            debug('EASDeployment(3): ' + EASSN);
-            let EASID = await contract.methods.getDataEntryEASAddress(request.dataCertificate, EASSN).call();
-            debug('EASDeployment(4): ' + EASID);
-            result['EASID'] = EASID;
-            return result;
           }
         } else {
-          debug('EASDeployment(5): ' + 'The userID is not registered as a consumer.');
-          throw Error('The userID is not registered as a consumer.');
+          debug('DataEntryDeletion(6): ' + 'The userID is not registered as a provider.');
+          throw Error('The userID is not registered as a provider.');
         }
-      } catch (error) {
-        debug('EASDeployment(6): ' + (error.message));
-        stack('EASDeployment(6): ' + (error.stack || error));
-        throw Error(error);
+      } else {
+        debug('DataEntryDeletion(7): ' + 'The directory ID does not exist.');
+        throw Error('The directory ID does not exist.');
       }
+    } catch (error) {
+      debug('DataEntryDeletion(8): ' + (error.message));
+      stack('DataEntryDeletion(8): ' + (error.stack || error));
+      throw Error(error.message);
     }
   }
 
   /*
-    POST /eas/invoke/
-      --> EASInvocation()
-        --> checkInvocationFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> *set user type to provider
-              --> checkUserIdExist()
-              --> checkUserExistByUserId() --> [DATABASE]
-                --> (user exists)
-                  --> EASRetrievalAdditionInfo()
-                  --> EASContract.methods.getDataEntryInfo() --> [ETHEREUM]
-                  --> EASContract.methods.consumer() --> [ETHEREUM]
-                  --> EASContract.methods.isValid() --> [ETHEREUM]
-                  --> providerDatabase.retrieveUserAddressByDirectoryIdUserId() --> [DATABASE]
-                    --> (user address is the data provider of the EAS)
-                      --> checkContractExist()
-                      --> connectAndAccessDirectoryContract()
-                      --> unlockEthAccount()
-                      --> _invokeEAS()
-                      --> contract.methods.invokeEAS() --> [ETHEREUM]
-                      --> result = { message, txHash };
-                    --> (user address is not the data provider of the EAS)
-                      --> error = 'user is not the data provider.'
-                --> (user does not exist)
-                  --> error = 'user ID is not registered.'
-
-    [Example]
-    EASInfo = {
-    '0': '0x1d575c9163f8CC3CecaF53784d0D733B2Aa09308',         (providerAddress)
-    '1': '100',                                                (offerPrice)
-    '2': '{"dataOwner":"djv24-vj8942-49hv2hv58924vh-fv294v",   (dataEntryInfo)
-          "dataCertificate":"49b45u9gm9042mg04b24jbj2=bj2=bj",
-          "dataDescription":"pneumonia",
-          "dataAccessPath":"https://directory/test/sql"}'
-          }
-    '3': '0x1e575c9163f8CC3CecaF53784d0D733B2Aa0933'           (consumerAddress)
+    POST /entry/agreement/
+      --> DataEntryAgreement()
   */
-  async EASInvocation(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.userID === '' || request.userID === undefined) {
-      throw Error('userID is not defined.');
-    } else if (request.password === '' || request.password === undefined) {
-      throw Error('password is not defined.');
-    } else if (request.EASID === '' || request.EASID === undefined) {
-      throw Error('EASID is not defined.');
-    } else if (request.invocationLog === '' || request.invocationLog === undefined) {
-      throw Error('invocationLog is not defined.');
-    } else {
-      try {
-        request.userType = 'provider';
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        await this.checkContractExist(request.EASID, 'EAS');
-        let EASInfo = await this.EASRetrievalAdditionInfo(request.EASID);
-        if (await this.checkUserIdExist(request)) {
-          let account = await providerDatabase.retrieveUserAddressByDirectoryIdUserId(request.directoryID, request.userID);
-          let userAddress = account[0].userAddress;
-          if (userAddress === EASInfo[0]) {
-            let passphrase = request.userID + request.password;
-            await this.unlockEthAccount(userAddress, passphrase);
-            let result = await this._invokeEAS(contract, userAddress, JSON.parse(EASInfo[2]).dataCertificate, request.invocationLog);
-            debug('EASInvocation(1): ' + util.inspect(result));
-            return result;
+  async DataEntryAgreement(signedAgreement) {
+    debug('DataEntryAgreement(0): ' + util.inspect(signedAgreement));
+    try {
+      // Step1: parse input fields in signedAgreement
+      //        set targetUserType and put signedAgreement as acknowledgement
+      const request = JSON.parse(signedAgreement.message);
+      signedAgreement.message = JSON.parse(signedAgreement.message);
+      request.acknowledgement = signedAgreement;
+      if (request.userType === 'provider') { request.targetUserType = 'consumer'; }
+      else if (request.userType === 'consumer') { request.targetUserType = 'provider'; }
+      else {
+        debug('DataEntryAgreement(1): ' + 'The userType is not defined.');
+        throw Error('The userType is not defined.');
+      }
+      // Step2: retrieve incoming user account 
+      const userAccount = await this.UR_Database.retrieveByConditions(
+        this.directoryID,
+        request.userType,
+        { userID: request.userID }
+      );
+      if (!userAccount.data.length) {
+        debug('DataEntryAgreement(2): ' + request.userType + ' ID does not exist.');
+        throw Error(request.userType + ' ID does not exist.');
+      }
+      if (!userAccount.data[0].isConfirmed) {
+        debug('DataEntryAgreement(3): ' + 'Waiting for ' + request.userType + ': ' + request.userID + ' registration to be confirmed');
+        throw Error('Waiting for ' + request.userType + ': ' + request.userID + ' registration to be confirmed');
+      }
+      const userAddress = userAccount.data[0].userAddress;
+      debug('DataEntryAgreement(4): ' + userAddress);
+      // Step3: retrieve target user account
+      const targetUserAccount = await this.UR_Database.retrieveByConditions(
+        this.directoryID,
+        request.targetUserType,
+        { userID: request.targetUserID }
+      );
+      if (!userAccount.data.length) {
+        debug('DataEntryAgreement(5): ' + request.targetUserType + ' ID does not exist.');
+        throw Error(request.targetUserType + ' ID does not exist.');
+      }
+      if (!userAccount.data[0].isConfirmed) {
+        debug('DataEntryAgreement(6): ' + 'Waiting for ' + request.userType + ': ' + request.userID + ' registration to be confirmed');
+        throw Error('Waiting for ' + request.userType + ': ' + request.userID + ' registration to be confirmed');
+      }
+      const targetUserAddress = targetUserAccount.data[0].userAddress;
+      debug('DataEntryAgreement(7): ' + targetUserAddress);
+      // Step4: recover the signed data entry agreement to compare signingAddress and userAddress
+      const signingAddress = await this._web3.eth.accounts.recover(signedAgreement);
+      debug('DataEntryAgreement(8): ' + signingAddress);
+      if (signingAddress.toLowerCase() !== userAddress.toLowerCase()) {
+        debug('DataEntryAgreement(9): ' + 'signingAddress is not identical with userAddress.');
+        throw (Error('signingAddress is not identical with userAddress.'));
+      }
+      // Step5: check whether the data entry exist described in the agreement
+      request.dataKey = request.dataEntryCreationDate.toString() + request.dataCertificate;
+      const dataEntry = await this.DIR_Database.retrieveByConditions(this.directoryID, { dataKey: request.dataKey });
+      await this.checkAgreementInfo(request, dataEntry);
+
+      if ('consumer' === request.userType) {
+        request.targetUserType = 'provider';
+        request.userAddress = userAddress;
+        request.targetUserAddress = targetUserAddress;
+        // Step6a: check whether consumer's agreement exists or not
+        const Agreement = await this.AGR_Database.retrieveByConditions(this.directoryID, request);
+        if (Agreement.data.length) {
+          // Step7a: find the agreement that is not rejected
+          let pendingAgreement = await Agreement.data.find((agreement) => {
+            return !agreement.isRejected;
+          });
+          // Step8a: if there is any consumer's agreement which is not rejected
+          if (pendingAgreement) {
+            debug('DataEntryAgreement(10): ' + "Waiting for provider's agreement!");
+            throw Error("Waiting for provider's agreement!");
+          }
+        }
+        // Step9a: write data entry agreement to DB (consumer)
+        const DBresult = await this.AGR_Database.writeDataEntryAgreement(this.directoryID, userAddress, targetUserAddress, request);
+        this.socketServer.update && this.socketServer.update('AGR', 'provider', targetUserAccount.data[0].userID, 'A new consumer agreement has been received.');
+        debug('DataEntryAgreement(11): ' + util.inspect(DBresult));
+        // Step10a: write audit trail log with the agreement to DB
+        const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+          this.directoryID,
+          request.dataCertificate,
+          new Date(),
+          DBresult.message,
+          JSON.stringify(DBresult.data)
+        );
+        debug('DataEntryAgreement(12): ' + util.inspect(LOGresult));
+        return DBresult;
+      } else if ('provider' === request.userType) {
+        request.targetUserType = 'consumer';
+        // Step6b: check whether consumer's agreement exists or not
+        const consumerAgreementSearchConditions = {
+          userID: request.targetUserID,
+          userAddress: targetUserAddress,
+          targetUserID: request.userID,
+          targetUserAddress: userAddress,
+          dataKey: request.dataKey
+        };
+        const targetAgreement = await this.AGR_Database.retrieveByConditions(this.directoryID, consumerAgreementSearchConditions);
+        if (!targetAgreement.data.length) {
+          debug('DataEntryAgreement(13): ' + "No matching consumer's agreement exists.");
+          throw Error("No matching consumer's agreement exists.");
+        }
+        // Step7b: find the agreement that is not rejected
+        let pendingTargetAgreement = await targetAgreement.data.find((agreement) => {
+          return !agreement.isRejected;
+        });
+        // Step8b: if there is no consumer's agreement which is not rejected
+        if (!pendingTargetAgreement) {
+          debug('DataEntryAgreement(14): ' + "All agreements are rejected, waiting for new consumer's agreement.");
+          throw Error("All agreements are rejected, waiting for new consumer's agreement.");
+        }
+        // Step9b: check the dataOfferPrice of agreements are matched.
+        if (request.dataBiddingPrice.toString() === pendingTargetAgreement.dataBiddingPrice.toString()) {
+          // Step10b: check the dataExpirationDate of agreements are matched.
+          if (request.EASExpirationDate.toString() === moment(pendingTargetAgreement.EASExpirationDate).unix().toString()) {
+            // Step11b: write data entry agreement to DB (provider).
+            const DBresult = await this.AGR_Database.writeDataEntryAgreement(this.directoryID, userAddress, targetUserAddress, request);
+            // Step12b: write audit trail log with the agreement to DB
+            const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+              this.directoryID,
+              request.dataCertificate,
+              new Date(),
+              DBresult.message,
+              JSON.stringify(DBresult.data)
+            );
+            debug('DataEntryAgreement(15): ' + util.inspect(DBresult));
+            debug('DataEntryAgreement(15): ' + util.inspect(LOGresult));
+            // Step13b: send EAS to blockchain
+            const EASD_DBresult = await this.EASDeployment(request, pendingTargetAgreement.acknowledgement, targetUserAccount);
+            debug('DataEntryAgreement(16): ' + util.inspect(EASD_DBresult));
+            return EASD_DBresult;
           } else {
-            throw Error('The user is not the data provider of the entry.');
+            debug('DataEntryAgreement(17): ' + "EASExpirationDate doesn't match");
+            throw Error("EASExpirationDate doesn't match.");
           }
         } else {
-          debug('EASInvocation(2): ' + 'The userID is not registered as a provider.');
-          throw Error('The userID is not registered as a provider.');
+          debug('DataEntryAgreement(18): ' + "dataOfferPrice doesn't match");
+          throw Error("dataOfferPrice doesn't match.");
         }
-      } catch (error) {
-        debug('EASInvocation(3): ' + (error.message));
-        stack('EASInvocation(3): ' + (error.stack || error));
-        throw Error(error);
       }
+    } catch (error) {
+      debug('DataEntryAgreement(19): ' + (error.message));
+      stack('DataEntryAgreement(19): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  async DataEntryAgreementRejection(signedAgreement) {
+    debug('DataEntryAgreementRejection(0)' + util.inspect(signedAgreement));
+    try {
+      const request = JSON.parse(signedAgreement.message);
+
+      if (request.userType === 'provider') { request.targetUserType = 'consumer'; }
+      else if (request.userType === 'consumer') { request.targetUserType = 'provider'; }
+      else {
+        debug('DataEntryAgreementRejection(1): ' + 'The userType is not defined.');
+        throw Error('The userType is not defined.');
+      }
+      // Step1: retrieve incoming user account 
+      const userAccount = await this.UR_Database.retrieveByConditions(
+        this.directoryID,
+        request.userType,
+        { userID: request.userID }
+      );
+      if (!userAccount.data.length) {
+        debug('DataEntryAgreementRejection(2): ' + request.userType + ' ID does not exist.');
+        throw Error(request.userType + ' ID does not exist.');
+      }
+      if (!userAccount.data[0].isConfirmed) {
+        debug('DataEntryAgreementRejection(3): ' + 'Waiting for ' + request.userType + ': ' + request.userID + ' registration to be confirmed');
+        throw Error('Waiting for ' + request.userType + ': ' + request.userID + ' registration to be confirmed');
+      }
+      const userAddress = userAccount.data[0].userAddress;
+      debug('DataEntryAgreementRejection(4): ' + userAddress);
+      // Step2: retrieve target user account
+      const targetUserAccount = await this.UR_Database.retrieveByConditions(
+        this.directoryID,
+        request.targetUserType,
+        { userID: request.targetUserID }
+      );
+      if (!targetUserAccount.data.length) {
+        debug('DataEntryAgreementRejection(5): ' + request.targetUserType + ' ID does not exist.');
+        throw Error(request.userType + ' ID does not exist.');
+      }
+      if (!targetUserAccount.data[0].isConfirmed) {
+        debug('DataEntryAgreementRejection(6): ' + 'Waiting for ' + request.targetUserType + ': ' + request.targetUserID + ' registration to be confirmed');
+        throw Error('Waiting for ' + request.targetUserType + ': ' + request.targetUserID + ' registration to be confirmed');
+      }
+      const targetUserAddress = targetUserAccount.data[0].userAddress;
+      debug('DataEntryAgreementRejection(7): ' + targetUserAddress);
+      // Step3: recover the signed data entry agreement to compare signingAddress and userAddress
+      const signingAddress = await this._web3.eth.accounts.recover(signedAgreement);
+      debug('DataEntryAgreementRejection(8): ' + signingAddress);
+      if (signingAddress.toLowerCase() !== userAddress.toLowerCase()) {
+        debug('DataEntryAgreementRejection(9): ' + 'signingAddress is not identical with userAddress.');
+        throw (Error('signingAddress is not identical with userAddress.'));
+      }
+      // Step4: check whether target agreement exists or not
+      const targetAgreementSearchConditions = {
+        userID: request.targetUserID,
+        targetUserID: request.userID,
+        dataKey: request.dataEntryCreationDate.toString() + request.dataCertificate
+      };
+      const targetAgreement = await this.AGR_Database.retrieveByConditions(this.directoryID, targetAgreementSearchConditions);
+      if (!targetAgreement.data.length) {
+        debug('DataEntryAgreementRejection(10): ' + "No matching consumer's agreement exists.");
+        throw Error("No matching consumer's agreement exists.");
+      }
+      // Step5: find the agreement that is not rejected
+      const pendingTargetAgreement = await targetAgreement.data.find((agreement) => {
+        return !agreement.isRejected;
+      });
+      // Step6: if there is a consumer's agreement which is not rejected, set isRejected to false 
+      if (pendingTargetAgreement) {
+        const DBresult = await this.AGR_Database.rejectDataEntryAgreement(this.directoryID, pendingTargetAgreement);
+        debug('DataEntryAgreementRejection(11): ' + util.inspect(DBresult));
+        this.socketServer.update && this.socketServer.update('AGR', 'consumer', targetUserAccount.data[0].userID, 'An agreement has been rejected.');
+        return DBresult;
+      } else {
+        debug('DataEntryAgreementRejection(12): ' + "All agreements are rejected.");
+        throw Error("All agreements are rejected.");
+      }
+    } catch (error) {
+      debug('DataEntryAgreementRejection(13): ' + (error.message));
+      stack('DataEntryAgreementRejection(13): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  /*
+    GET /entry/count/
+      --> DataEntryCount()
+  */
+  async DataEntryCount() {
+    debug('DataEntryCount(0)');
+    try {
+      const dataEntryList = await this.DIR_Database.retrieveAll();
+
+      const response = {
+        message: 'Data entry count is retrieved.',
+        data: {
+          entryCount: dataEntryList.data.length
+        }
+      };
+      debug('DataEntryCount(1): ' + util.inspect(response));
+      return response;
+    } catch (error) {
+      debug('DataEntryCount(2): ' + (error.message));
+      stack('DataEntryCount(2): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  /*
+    GET /entry/:userType/:userID/
+      --> DataEntryRetrievalByUserID()
+  */
+  async DataEntryRetrievalByUserID(request) {
+    debug('DataEntryRetrievalByUserID(0): ' + util.inspect(request));
+    try {
+      let dataEntryList, AGRlist, EASlist, invocationList, response;
+      if ('provider' === request.userType) {
+        // retrieve dataEntry by userID (provider)
+        dataEntryList = await this.DIR_Database.retrieveByConditions(
+          this.directoryID, { userID: request.userID }, { checkDueDate: false });
+        // retrieve AGR and EAS for each data entry
+        for (let entry of dataEntryList.data) {
+          if (entry.isOffered) {
+            // retrieve AGR by dataCertificate
+            AGRlist = await this.AGR_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey }
+            );
+            entry.AGRlist = AGRlist.data;
+          } else {
+            entry.AGRlist = [];
+          }
+          // retrieve EAS by dataCertificate
+          EASlist = await this.EAS_Database.retrieveByConditions(
+            this.directoryID, { dataKey: entry.dataKey }, { checkExpirationDate: false }
+          );
+          entry.EASlist = EASlist.data;
+          // retrieve invocation record by dataCertificate
+          invocationList = await this.EASI_Database.retrieveByConditions(
+            this.directoryID, { dataKey: entry.dataKey }
+          );
+          entry.invocationList = invocationList.data;
+        }
+        response = {
+          message: 'Data entry list is retrieved by userID.',
+          data: dataEntryList.data
+        };
+      } else if ('consumer' === request.userType) {
+        // the object mapping the dataKey to the data entry index of dataEntryList
+        let dataKeyList = {};
+        dataEntryList = [];
+        // retrieve AGR by userID (consumer)
+        AGRlist = await this.AGR_Database.retrieveByConditions(
+          this.directoryID, {
+            userID: request.userID,
+            userType: 'consumer'
+          }
+        );
+        // for each AGR associated with the consumer,
+        // use the data key of the AGR to find the corresponding data entry
+        for (let AGR of AGRlist.data) {
+          // if the dataKey of AGR is not searched in dataKeyList, 
+          // indicating that the data entry has not pushed into the dataEntryList,
+          // find the data entry corresponding to the dataKey and push it into the dataEntryList
+          if (!(AGR.dataKey in dataKeyList)) {
+            let dataEntry = await this.DIR_Database.retrieveByConditions(
+              this.directoryID, { dataKey: AGR.dataKey }, { checkDueDate: false }
+            );
+            // if data entry exists, put this dataKey into list and this dataEntry to list
+            if (dataEntry.data.length) {
+              // retrieve invocation record by dataKey
+              invocationList = await this.EASI_Database.retrieveByConditions(
+                this.directoryID, { dataKey: AGR.dataKey },
+              );
+
+              dataKeyList[AGR.dataKey] = dataEntryList.length;
+              dataEntry.data[0].AGRlist = [AGR];
+              dataEntry.data[0].EASlist = [];
+              dataEntry.data[0].invocationList = invocationList.data;
+              dataEntryList.push(dataEntry.data[0]);
+            }
+          } else {
+            // if the dataKey of AGR is searched, 
+            // indicating that the data entry has been pushed into the data entry list
+            // push the AGR into the corresponding data entry AGRlist     
+            const dataEntryIndexByDataKey = dataKeyList[AGR.dataKey];
+            dataEntryList[dataEntryIndexByDataKey].AGRlist.push(AGR);
+          }
+        }
+        // retrieve EAS by userID (consumer)
+        EASlist = await this.EAS_Database.retrieveByConditions(
+          this.directoryID, { dataConsumerID: request.userID }, { checkExpirationDate: false }
+        );
+        // for each EAS associated with the consumer,
+        // push the data entry information in the EAS into dataEntryList
+        for (let EAS of EASlist.data) {
+          // if the dataKey of EAS is not searched in dataKeyList, 
+          // indicating that the data entry has not pushed into the dataEntryList,
+          // push the data entry information in the EAS into the dataEntryList
+          if (!(EAS.dataKey in dataKeyList)) {
+            let dataEntry = await this.DIR_Database.retrieveByConditions(
+              this.directoryID, { dataKey: EAS.dataKey }, { checkDueDate: false }
+            );
+            // if data entry exists, put this dataKey into list and this dataEntry to list
+            if (dataEntry.data.length) {
+              invocationList = await this.EASI_Database.retrieveByConditions(
+                this.directoryID, { dataKey: EAS.dataKey }
+              );
+              dataKeyList[EAS.dataKey] = dataEntryList.length;
+              dataEntry.data[0].AGRlist = [];
+              dataEntry.data[0].EASlist = [EAS];
+              dataEntry.data[0].invocationList = invocationList.data;
+              dataEntryList.push(dataEntry.data[0]);
+            } else {
+              // if the dataKey of EAS is searched, 
+              // indicating that the data entry has been pushed into the data entry list 
+              // push the EAS into the corresponding data entry EASlist    
+              let dataEntryIndexByDataKey = dataKeyList[EAS.dataKey];
+              dataEntryList[dataEntryIndexByDataKey].EASlist.push(EAS);
+            }
+          }
+        }
+        response = {
+          message: 'Data entry list is retrieved by userID.',
+          data: dataEntryList
+        };
+      } else {
+        debug('DataEntryRetrievalByUserID(1): ' + 'The userType is not defined.');
+        throw Error('The userType is not defined.');
+      }
+
+      debug('DataEntryRetrievalByUserID(2): ' + util.inspect(response));
+      return response;
+    } catch (error) {
+      debug('DataEntryRetrievalByUserID(3): ' + (error.message));
+      stack('DataEntryRetrievalByUserID(3): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  /*
+    GET /query/
+      --> DataQueryService()
+  */
+  async DataQueryService(request) {
+    debug('DataQueryService(0)');
+    try {
+      if (request.filters)
+        request.filters = JSON.parse(request.filters);
+      const dataEntry = await this.DIR_Database.retrieveByConditions(this.directoryID, request);
+      let AGRlist, EASlist, invocationList, dataEntryList = [];
+
+      if ('consumer' === request.userType) {
+        for (let entry of dataEntry.data) {
+          if (entry.isOffered) {
+            // retrieve AGR by dataKey and dataConsumerID
+            AGRlist = await this.AGR_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey, userID: request.dataConsumerID }
+            );
+            entry.AGRlist = AGRlist.data;
+            // retrieve EAS by dataKey and dataConsumerID
+            EASlist = await this.EAS_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey, dataConsumerID: request.dataConsumerID }
+            );
+            entry.EASlist = EASlist.data;
+            // retrieve EAS by dataKey
+            invocationList = await this.EASI_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey }
+            );
+            entry.invocationList = invocationList.data;
+            dataEntryList.push(entry);
+          }
+        }
+      } else if ('provider' === request.userType) {
+        for (let entry of dataEntry.data) {
+          if (entry.isOffered) {
+            // retrieve AGR by dataKey and dataProviderID
+            AGRlist = await this.AGR_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey, targetUserID: request.dataProviderID }
+            );
+            entry.AGRlist = AGRlist.data;
+            // retrieve EAS by dataKey and dataProviderID
+            EASlist = await this.EAS_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey }
+            );
+            entry.EASlist = EASlist.data;
+            // retrieve invocation record by dataKey
+            invocationList = await this.EASI_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey }
+            );
+            entry.invocationList = invocationList.data;
+            dataEntryList.push(entry);
+          }
+        }
+      } else {
+        for (let entry of dataEntry.data) {
+          if (entry.isOffered) {
+            entry.AGRlist = [];
+            entry.EASlist = [];
+            // retrieve invocation record by dataKey
+            invocationList = await this.EASI_Database.retrieveByConditions(
+              this.directoryID, { dataKey: entry.dataKey }
+            );
+            entry.invocationList = invocationList.data;
+            dataEntryList.push(entry);
+          }
+        }
+      }
+      let filters = {};
+      if (request.filters) {
+        if (0 === Object.keys(request.filters).length) {
+          const filter = await this.SF_Datebase.retrieveByConditions(request.dataEntryTitle);
+          if (filter.data.length) filters = JSON.parse(filter.data[0].filters);
+        }
+      } else {
+        const filter = await this.SF_Datebase.retrieveByConditions(request.dataEntryTitle);
+        if (filter.data.length) filters = JSON.parse(filter.data[0].filters);
+      }
+      const response = {
+        message: 'Data entry list is retrieved from DQS.',
+        data: dataEntryList,
+        filters: filters
+      };
+      debug('DataQueryService(1): ' + util.inspect(response));
+      return response;
+    } catch (error) {
+      debug('DataQueryService(2): ' + (error.message));
+      stack('DataQueryService(2): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  /*
+    POST /audit/
+      --> AuditTrailLogRetrieval()
+  */
+  async AuditTrailLogRetrieval(request) {
+    debug('AuditTrailLogRetrieval(0)');
+    try {
+      if (await this.checkUserExist(request)) {
+        const auditLogList = await this.ATL_Database.retrieveByConditions(this.directoryID, request);
+        const response = {
+          message: 'Audit Trail Logs are retrieved.',
+          data: auditLogList.data
+        };
+        debug('AuditTrailLogRetrieval(1): ' + util.inspect(response));
+        return response;
+      }
+      else { throw (Error('ATL: access denied')); }
+    } catch (error) {
+      debug('AuditTrailLogRetrieval(2): ' + (error.message));
+      stack('AuditTrailLogRetrieval(2): ' + (error.stack || error));
+      throw Error(error.message);
     }
   }
 
   /*
     POST /eas/revoke/
       --> EASRevocation()
-        --> checkRevocationFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> EASRetrievalAdditionInfo()
-            --> EASContract.methods.getDataEntryInfo() --> [ETHEREUM]
-            --> EASContract.methods.consumer() --> [ETHEREUM]
-            --> EASContract.methods.isValid() --> [ETHEREUM]
-              --> (EAS is valid)
-                --> checkContractExist()
-                --> connectAndAccessDirectoryContract()
-                --> (provider)
-                  --> checkUserIdExist()
-                  --> checkUserExistByUserId() --> [DATABASE]
-                    --> (user exists)
-                      --> providerDatabase.retrieveUserAddressByDirectoryIdUserId() --> [DATABASE]
-                      --> (user address is the data provider of the EAS)
-                        --> unlockEthAccount()
-                        --> _revokeEASbyProvider()
-                        --> contract.methods.revokeEASbyProvider() --> [ETHEREUM]
-                        --> result = { message, txHash };
-                      --> (user address is not the data provider of the EAS)
-                        --> error = 'user is not the data provider.'
-                    --> (user does not exist)
-                      --> error = 'user ID is not registered as a provider.'
-                --> (consumer)
-                  --> checkUserIdExist()
-                  --> checkUserExistByUserId() --> [DATABASE]
-                    --> (user exists)
-                      --> consumerDatabase.retrieveUserAddressByDirectoryIdUserId() --> [DATABASE]
-                      --> (user address is the data consumer of the EAS)
-                        --> unlockEthAccount()
-                        --> _revokeEASbyConsumer()
-                        --> contract.methods.revokeEASbyConsumer() --> [ETHEREUM]
-                        --> result = { message, txHash };
-                      --> (user address is not the data consumer of the EAS)
-                        --> error = 'user is not the data consumer.'
-                    --> (user does not exist)
-                      --> error = 'user ID is not registered as a consumer.'
-                --> (otherwise)
-                  --> error = 'user type is not defined.'                
-              --> (EAS is not valid)
-                --> error = 'EAS has been revoked.'
   */
   async EASRevocation(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.userType === '' || request.userType === undefined) {
-      throw Error('userType is not defined.');
-    } else if (request.userID === '' || request.userID === undefined) {
-      throw Error('userID is not defined.');
-    } else if (request.password === '' || request.password === undefined) {
-      throw Error('password is not defined.');
-    } else if (request.EASID === '' || request.EASID === undefined) {
-      throw Error('EASID is not defined.');
-    } else {
-      try {
-        let userAddress;
-        await this.checkContractExist(request.EASID, 'EAS');
-        let EASInfo = await this.EASRetrievalAdditionInfo(request.EASID);
-        if (EASInfo[4]) {
-          await this.checkContractExist(request.directoryID, 'directory');
-          let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-          if (request.userType === 'provider') {
-            if (await this.checkUserIdExist(request)) {
-              let account = await providerDatabase.retrieveUserAddressByDirectoryIdUserId(request.directoryID, request.userID);
-              userAddress = account[0].userAddress;
-              if (userAddress === EASInfo[0]) {
-                let passphrase = request.userID + request.password;
-                await this.unlockEthAccount(userAddress, passphrase);
-                let result = await this._revokeEASbyProvider(contract, userAddress, JSON.parse(EASInfo[2]).dataCertificate, EASInfo[3]);
-                debug('EASRevocation(1): ' + util.inspect(result));
-                return result;
+    debug('EASRevocation(0): ' + util.inspect(request));
+    try {
+      // Step1: parse signed transaction
+      const signedTX = await this.parseSignedTX(request);
+      // Step2: check whether the data directory exists
+      if (await this.checkContractExist(this.directoryID) && signedTX.data.to === this.directoryID.toLowerCase().slice(2)) {
+        // Step3: retrieve EAS by the dataKey and dataConsumerAddress in the parsed signed transaction
+        const contractFunc = transactionConfig[signedTX.data.contractFuncNameHash];
+        if (contractFunc) {
+          signedTX.data.decodedTransaction.dataConsumerAddress = ("revokeEASbyProvider" === contractFunc.functionABI.name) ?
+            signedTX.data.decodedTransaction.consumerAddress.toLowerCase() : signedTX.data.userAddress;
+          const EAS = await this.EAS_Database.retrieveByConditions(this.directoryID, signedTX.data.decodedTransaction, { checkExpirationDate: false });
+          // Step4: check whether retrieved EAS exists
+          if (EAS.data.length) {
+            // Step5: check whether EAS is confirmed
+            if (EAS.data[0].isConfirmed) {
+              // Step6: check whether EAS is valid
+              if (EAS.data[0].isValid) {
+                // Step7: recognize the usertype (provider or consumer) by contractFuncNameHash in parsed signed transaction
+                if ('revokeEASbyProvider' === contractFunc.functionABI.name) {
+                  // Step8a: check whether the incoming user acccount exists
+                  signedTX.data.userType = 'provider';
+                  if (await this.checkUserExist(signedTX.data)) {
+                    // Step9a: check whether the signed address of parsed signed transaction matches the providerAddress of EAS
+                    const dataEntry = await this.DIR_Database.retrieveByConditions(this.directoryID, signedTX.data.decodedTransaction, { checkDueDate: false });
+                    if (dataEntry.data[0].dataProviderAddress === signedTX.data.userAddress) {
+                      // Step10a: check whether the consumer address in parsed signed transaction matches the consumerAddress in EAS 
+                      if (EAS.data[0].dataConsumerAddress === signedTX.data.decodedTransaction.consumerAddress.toLowerCase()) {
+                        signedTX.data.EASID = EAS.data[0].EASID;
+                        // Step11a: send EASR-TX to Ethereum
+                        const DTLresult = await this._sendSignedTX('EASR', JSON.parse(request.signedTX).rawTransaction);
+                        // Step12a: set the dataValidityStatus in EAS to false in database
+                        const DBresult = await this.writeTransactionData(signedTX.data, DTLresult.data.txHash);
+                        debug('EASRevocation(1): ' + util.inspect(DTLresult));
+                        debug('EASRevocation(1): ' + util.inspect(DBresult));
+                        // Step13a: write audit trail log with the EASR-TX to DB
+                        const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+                          this.directoryID,
+                          EAS.data[0].dataCertificate,
+                          new Date(),
+                          DTLresult.message,
+                          DTLresult.data.txHash
+                        );
+                        debug('EASRevocation(2): ' + util.inspect(LOGresult));
+                        return DBresult;
+                      } else {
+                        debug('EASRevocation(3): ' + "The consumer doesn't match the consumer of the EAS.");
+                        throw Error("The consumer doesn't match the consumer of the EAS.");
+                      }
+                    } else {
+                      debug('EASRevocation(4): ' + "The user doesn't match the provider of the EAS.");
+                      throw Error("The user doesn't match the provider of the EAS.");
+                    }
+                  } else {
+                    debug('EASRevocation(5): ' + 'The user is not registered as a provider.');
+                    throw Error('The user is not registered as a provider.');
+                  }
+                } else if ('revokeEASbyConsumer' === contractFunc.functionABI.name) {
+                  signedTX.data.userType = 'consumer';
+                  // Step8b: check whether the data is downloaded
+                  if (!EAS.data[0].downloadCount) {
+                    // Step9b: check whether the signing address in parsed signed transaction matches the consumerAddress in EAS
+                    if (this.checkUserExist(signedTX.data)) {
+                      // Step10b: check whether the signed address of parsed signed transaction matches the consumerAddress of EAS
+                      if (EAS.data[0].dataConsumerAddress === signedTX.data.userAddress) {
+                        signedTX.data.EASID = EAS.data[0].EASID;
+                        // Step11b: send EASR-TX to Ethereum
+                        const DTLresult = await this._sendSignedTX('EASR', JSON.parse(request.signedTX).rawTransaction);
+                        // Step12b: set the dataValidityStatus in EAS to false in database
+                        const DBresult = await this.writeTransactionData(signedTX.data, DTLresult.data.txHash);
+                        debug('EASRevocation(6): ' + util.inspect(DTLresult));
+                        debug('EASRevocation(6): ' + util.inspect(DBresult));
+                        // Step13b: write audit trail log with the EASR-TX to DB
+                        const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+                          this.directoryID,
+                          EAS.data[0].dataCertificate,
+                          new Date(),
+                          DTLresult.message,
+                          DTLresult.data.txHash
+                        );
+                        debug('EASRevocation(7): ' + util.inspect(LOGresult));
+                        return DBresult;
+                      } else {
+                        debug('EASRevocation(8): ' + "The user doesn't match the consumer of the EAS.");
+                        throw Error("The user doesn't match the consumer of the EAS.");
+                      }
+                    } else {
+                      debug('EASRevocation(9): ' + 'The user is not registered as a consumer.');
+                      throw Error('The user is not registered as a consumer.');
+                    }
+                  } else {
+                    debug('EASRevocation(10): ' + "EAS can't be revoked after data file is downloaded.");
+                    throw Error("EAS can't be revoked after data file is downloaded.");
+                  }
+                } else {
+                  debug('EASRevocation(11): ' + 'The userType is not defined.');
+                  throw Error('The userType is not defined.');
+                }
               } else {
-                debug('EASRevocation(2): ' + 'The userID is not the provider of the EAS.');
-                throw Error('The userID is not the provider of the EAS.');
+                debug('EASRevocation(12): ' + 'The EAS has been revoked.');
+                throw Error('The EAS has been revoked.');
               }
             } else {
-              debug('EASRevocation(3): ' + 'This userID is not registered as a provider');
-              throw Error('The userID is not registered as a provider');
-            }
-          } else if (request.userType === 'consumer') {
-            if (await this.checkUserIdExist(request)) {
-              let account = await consumerDatabase.retrieveUserAddressByDirectoryIdUserId(request.directoryID, request.userID);
-              userAddress = account[0].userAddress;
-              if (userAddress === EASInfo[3]) {
-                let passphrase = request.userID + request.password;
-                await this.unlockEthAccount(userAddress, passphrase);
-                let result = await this._revokeEASbyConsumer(contract, userAddress, JSON.parse(EASInfo[2]).dataCertificate);
-                debug('EASRevocation(4): ' + util.inspect(result));
-                return result;
-              } else {
-                debug('EASRevocation(5): ' + 'The userID is not the consumer of the EAS.');
-                throw Error('The userID is not the consumer of the EAS.');
-              }
-            } else {
-              debug('EASRevocation(6): ' + 'This userID is not registered as a consumer.');
-              throw Error('The userID is not registered as a consumer.');
+              debug('EASRevocation(13): ' + 'Waiting for EAS to be confirmed');
+              throw Error('Waiting for EAS to be confirmed');
             }
           } else {
-            debug('EASRevocation(7): ' + 'The userType is not defined.');
-            throw Error('The userType is not defined.');
+            debug('EASRevocation(14): ' + "The EAS doesn't exist");
+            throw Error("The EAS doesn't exist");
           }
         } else {
-          throw Error('The EAS has been revoked.');
+          debug('EASRevocation(15): ' + 'Unknown transaction hash');
+          throw Error('Unknown transaction hash');
         }
-      } catch (error) {
-        debug('EASRevocation(9): ' + (error.message));
-        stack('EASRevocation(9): ' + (error.stack || error));
-        throw Error(error);
+      } else {
+        debug('EASRevocation(16): ' + 'The directory ID does not exist.');
+        throw Error('The directory ID does not exist.');
       }
-    }
-  }
-
-
-  /*
-    GET /entry/count/
-      --> DataEntryCount()
-        --> checkCountFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> checkContractExist()
-              --> (contract exists)
-                --> connectAndAccessDirectoryContract()
-                --> contract.methods.getDataEntryCount() --> [ETHEREUM]
-                --> result = { message, entryCount };
-              --> (contract does not exist)
-                --> error = 'directory ID does not exist.'
-  */
-  async DataEntryCount(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else {
-      try {
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        let entryCount = await contract.methods.getDataEntryCount().call();
-        let response = {
-          message: 'Data entry count is retrieved.',
-          entryCount: entryCount
-        };
-        debug('DataEntryCount(1): ' + util.inspect(response));
-        return response;
-      } catch (error) {
-        debug('DataEntryCount(2): ' + (error.message));
-        stack('DataEntryCount(2): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  /*
-    GET /entry/index/
-      --> DataEntryRetrievalByIndex()
-        --> checkIndexFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> checkContractExist()
-              --> (contract exists)
-                --> connectAndAccessDirectoryContract()
-                --> DataEntryCount()
-                  --> contract.methods.getDataEntryCount() --> [ETHEREUM]
-                    --> (data entry index is in the boundary)
-                      --> contract.methods.getDataEntryByIndex() --> [ETHEREUM]
-                      --> providerDatabase.retrieveUserIdByDirectoryIdUserAddress --> [DATABASE]
-                      --> result = { message, ... };
-                    --> (data entry index is out of the boundary)
-                      --> error = 'data entry index is out of boundary.'
-              --> (contract does not exist)
-                --> error = 'directory ID does not exist.'
-  */
-  async DataEntryRetrievalByIndex(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.index === '' || request.index === undefined) {
-      throw Error('index is not defined.');
-    } else {
-      try {
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        let dataEntryCount = await this.DataEntryCount(request);
-        if (parseInt(request.index) <= parseInt(dataEntryCount.entryCount) - 1) {
-          let dataEntryInfo = await contract.methods.getDataEntryByIndex(request.index).call();
-          let providerID = await providerDatabase.retrieveUserIdByDirectoryIdUserAddress(request.directoryID, dataEntryInfo[0]);
-          let description = JSON.parse(dataEntryInfo[2]);
-          let response = {
-            message: 'Data entry is retrieved by index.',
-            providerID: providerID[0].userID,
-            offerPrice: dataEntryInfo[1],
-            dataCertificate: description.dataCertificate,
-            dataOwner: description.dataOwner,
-            dataDescription: description.dataDescription,
-            dataAccessPath: description.dataAccessPath,
-            isSearched: dataEntryInfo[3],
-            dueDate: dataEntryInfo[4],
-            commitTime: dataEntryInfo[5]
-          };
-          debug('dataEntryRetrievalByIndex(1): ' + util.inspect(response));
-          return response;
-        } else {
-          debug('dataEntryRetrievalByIndex(2): ' + 'Index of data entry is out of boundary.');
-          throw Error('Index of data entry is out of boundary.');
-        }
-      } catch (error) {
-        debug('dataEntryRetrievalByIndex(3): ' + (error.message));
-        stack('dataEntryRetrievalByIndex(3): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  /*
-    GET /entry/dctf/
-      --> DataEntryRetrievalByDataCertificate()
-        --> checkCertificateFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> checkContractExist()
-              --> (contract exists)
-                --> connectAndAccessDirectoryContract()
-                --> contract.methods.getDataEntryLocationByCertificate() --> [ETHEREUM]
-                  --> (data entry does not exist)
-                    --> error = 'data entry does not exist'
-                  --> (data entry exists)
-                    --> contract.methods.getDataEntryInfoByCertificate() --> [ETHEREUM]
-                    --> contract.methods.getDataEntryAdditionInfoByCertificate() --> [ETHEREUM]
-                    --> providerDatabase.retrieveUserIdByDirectoryIdUserAddress --> [DATABASE]
-                    --> result = { message, ... };
-              --> (contract does not exist)
-                --> error = 'directory ID does not exist.'
-  */
-  async DataEntryRetrievalByDataCertificate(request) {
-    if (request.directoryID === '' || request.directoryID === undefined) {
-      throw Error('directoryID is not defined.');
-    } else if (request.dataCertificate === '' || request.dataCertificate === undefined) {
-      throw Error('dataCertificate is not defined.');
-    } else {
-      try {
-        await this.checkContractExist(request.directoryID, 'directory');
-        let contract = await this.connectAndAccessDirectoryContract(request.directoryID);
-        let dataEntryExist = await contract.methods.getDataEntryLocationByCertificate(request.dataCertificate).call();
-        if (dataEntryExist === '115792089237316195423570985008687907853269984665640564039457584007913129639935') {
-          debug('DataEntryRetrievalByDataCertificate(1): ' + 'Wrong data certificate: the data entry does not exist.');
-          throw Error('Wrong data certificate: the data entry does not exist.');
-        } else {
-          let dataEntryInfo = await contract.methods.getDataEntryInfoByCertificate(request.dataCertificate).call();
-          let dataEntryAdditionInfo = await contract.methods.getDataEntryAdditionInfoByCertificate(request.dataCertificate).call();
-          let providerID = await providerDatabase.retrieveUserIdByDirectoryIdUserAddress(request.directoryID, dataEntryInfo[0]);
-          let description = JSON.parse(dataEntryInfo[2]);
-          let response = {
-            message: 'Data entry is retrieved by data certificate.',
-            providerID: providerID[0].userID,
-            offerPrice: dataEntryInfo[1],
-            dataCertificate: description.dataCertificate,
-            dataOwner: description.dataOwner,
-            dataDescription: description.dataDescription,
-            dataAccessPath: description.dataAccessPath,
-            isSearched: dataEntryAdditionInfo[0],
-            dueDate: dataEntryAdditionInfo[1],
-            commitTime: dataEntryAdditionInfo[2],
-          };
-          debug('DataEntryRetrievalByDataCertificate(2): ' + util.inspect(response));
-          return response;
-        }
-      } catch (error) {
-        debug('DataEntryRetrievalByDataCertificate(3): ' + (error.message));
-        stack('DataEntryRetrievalByDataCertificate(3): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  /*
-    GET /eas/sid/
-      --> EASRetrieval()
-        --> checkEASFields() (REVISE NEEDED)
-          --> (incorrect)
-            --> error = xxxx is not defined.'
-          --> (correct)
-            --> checkContractExist()
-              --> (contract exists)
-                --> connectAndAccessEASContract()
-                --> EASContract.methods.getDataEntryInfo() --> [ETHEREUM]
-                --> EASContract.methods.directoryContractAddress() --> [ETHEREUM]
-                --> EASContract.methods.getDataEntryAdditionInfoByCertificate() --> [ETHEREUM]
-                --> providerDatabase.retrieveUserIdByDirectoryIdUserAddress --> [DATABASE]
-                --> EASContract.methods.consumer() --> [ETHEREUM]
-                --> consumerDatabase.retrieveUserIdByDirectoryIdUserAddress --> [DATABASE]
-                --> result = { message, ... };
-              --> (contract does not exist)
-                --> error = 'directory ID does not exist.'
-  */
-  async EASRetrieval(request) {
-    if (request.EASID === '' || request.EASID === undefined) {
-      throw Error('EASID is not defined.');
-    } else {
-      try {
-        await this.checkContractExist(request.EASID, 'EAS');
-        let EASContract = await this.connectAndAccessEASContract(request.EASID);
-        let EASInfo = await EASContract.methods.getDataEntryInfo().call();
-        let directoryID = await EASContract.methods.directoryContractAddress().call();
-        let consumerAddress = await EASContract.methods.consumer().call();
-        let consumerID = await consumerDatabase.retrieveUserIdByDirectoryIdUserAddress(directoryID, consumerAddress);
-        let providerID = await providerDatabase.retrieveUserIdByDirectoryIdUserAddress(directoryID, EASInfo[0]);
-        let description = JSON.parse(EASInfo[2]);
-        let response = {
-          message: 'EAS is retrieved by EASID.',
-          consumerID: consumerID[0].userID,
-          providerID: providerID[0].userID,
-          offerPrice: EASInfo[1],
-          dataCertificate: description.dataCertificate,
-          dataOwner: description.dataOwner,
-          dataDescription: description.dataDescription,
-          dataAccessPath: description.dataAccessPath,
-          expirationDate: await EASContract.methods.EASExpiration().call(),
-          deploymentTime: await EASContract.methods.deploymentTime().call(),
-          providerAgreement: await EASContract.methods.providerAgreement().call(),
-          consumerAgreement: await EASContract.methods.consumerAgreement().call(),
-          isValid: await EASContract.methods.isValid().call()
-        };
-        debug('EASRetrieval(1): ' + util.inspect(response));
-        return response;
-      } catch (error) {
-        debug('EASRetrieval(2): ' + (error.message));
-        stack('EASRetrieval(2): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  async EASRetrievalAdditionInfo(EASID) {
-    try {
-      let EASContract = await this.connectAndAccessEASContract(EASID);
-      let EASInfo = await EASContract.methods.getDataEntryInfo().call();
-      let consumer = await EASContract.methods.consumer().call();
-      let isValid = await EASContract.methods.isValid().call();
-      EASInfo[3] = consumer;
-      EASInfo[4] = isValid;
-      debug('EASRetrievalAdditionInfo(1): ' + util.inspect(EASInfo));
-      return EASInfo;
     } catch (error) {
-      debug('EASRetrievalAdditionInfo(2): ' + (error.message));
-      stack('EASRetrievalAdditionInfo(2): ' + (error.stack || error));
-      throw Error(error);
+      debug('EASRevocation(17): ' + (error.message));
+      stack('EASRevocation(17): ' + (error.stack || error));
+      throw Error(error.message);
     }
   }
 
-  async RetriveLocalDatabase() {
+  async EASInvocation(request) {
+    debug('EASInvocation(0): ' + util.inspect(request));
     try {
-      const providerResult = await providerDatabase.retrieveAll();
-      const consumerResult = await consumerDatabase.retrieveAll();
-      debug('RetriveLocalDatabase(1): ' + util.inspect(providerResult));
-      debug('RetriveLocalDatabase(1): ' + util.inspect(consumerResult));
-      return {
-        providers: providerResult,
-        consumers: consumerResult
+      // Step1: parse signed transaction
+      const signedTX = await this.parseSignedTX(request);
+      signedTX.data.userType = 'provider';
+      // Step2: check whether the data directory exists
+      if (await this.checkContractExist(this.directoryID) && signedTX.data.to === this.directoryID.toLowerCase().slice(2)) {
+        // Step3: check whether the incoming user acccount exists
+        if (await this.checkUserExist(signedTX.data)) {
+          // Step4: check whether the data entry exists by data certificate
+          const dataEntry = await this.DIR_Database.retrieveByConditions(this.directoryID, signedTX.data.decodedTransaction, { checkDueDate: false });
+          if (dataEntry.data.length) {
+            if (dataEntry.data[0].isConfirmed) {
+              debug('EASInvocation(1): ' + util.inspect(dataEntry));
+              debug('EASInvocation(1): ' + util.inspect(signedTX.data.userAddress));
+              if (signedTX.data.userAddress === dataEntry.data[0].dataProviderAddress) {
+                // Step5: send EASI-TX to Ethereum
+                const DTLresult = await this._sendSignedTX('EASI', JSON.parse(request.signedTX).rawTransaction);
+                // Step6: write audit trail log with the EASI-TX to DB
+                const downlaodIsFailed = await signedTX.data.decodedTransaction.invocationRecord.search('failed');
+                signedTX.data.decodedTransaction.downloadStatus = downlaodIsFailed === -1 ? true : false;
+                signedTX.data.decodedTransaction.dataCertificate = dataEntry.data[0].dataCertificate;
+                const DBresult = await this.writeTransactionData(signedTX.data, DTLresult.data.txHash);
+                debug('EASInvocation(2): ' + util.inspect(DTLresult));
+                debug('EASInvocation(2): ' + util.inspect(DBresult));
+                const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+                  this.directoryID,
+                  dataEntry.data[0].dataCertificate,
+                  new Date(),
+                  DTLresult.message,
+                  DTLresult.data.txHash);
+                debug('EASInvocation(3): ' + util.inspect(LOGresult));
+                return DBresult;
+              } else {
+                debug('EASInvocation(4): ' + 'The userID is not the data provider of the entry.');
+                throw Error('The userID is not the data provider of the entry.');
+              }
+            } else {
+              debug('EASInvocation(5): ' + 'Waiting for data entry to be confirmed');
+              throw Error('Waiting for data entry to be confirmed');
+            }
+          } else {
+            debug('EASInvocation(6): ' + 'Wrong data certificate: the data entry does not exist.');
+            throw Error('Wrong data certificate: the data entry does not exist.');
+          }
+        } else {
+          debug('EASInvocation(7): ' + 'The userID is not registered as a provider.');
+          throw Error('The userID is not registered as a provider.');
+        }
+      } else {
+        debug('EASInvocation(8): ' + 'The directory ID does not exist.');
+        throw Error('The directory ID does not exist.');
+      }
+    } catch (error) {
+      debug('EASInvocation(9): ' + (error.message));
+      stack('EASInvocation(9): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  async EASDeployment(request, consumerAcknowledgement, consumerAccount) {
+    debug('EASDeployment(0): ' + util.inspect(request));
+    try {
+      if (await this.checkContractExist(this.directoryID)) {
+        request.dataConsumerID = consumerAccount.data[0].userID;
+        request.dataConsumerAddress = consumerAccount.data[0].userAddress;
+        request.dataProviderAcknowledgement = JSON.stringify(request.acknowledgement);
+        request.dataConsumerAcknowledgement = consumerAcknowledgement;
+        request.EASDeploymentDate = moment().unix();
+        const contract = await this.accessContract('Directory', this.directoryID);
+        await this.unlockEthAccount(this._config.COINBASE_ACCOUNT, this._config.PASSPHRASE);
+        const acknowledgement = {
+          dataProviderAcknowledgement: {
+            messageHash: request.acknowledgement.messageHash,
+            signature: request.acknowledgement.signature
+          },
+          dataConsumerAcknowledgement: {
+            messageHash: JSON.parse(consumerAcknowledgement).messageHash,
+            signature: JSON.parse(consumerAcknowledgement).signature
+          }
+        };
+        debug('EASDeployment(1): ' + 'Acknowledgement: ' + acknowledgement);
+        const DTLresult = await this._deployEAS(
+          contract,
+          request.targetUserAddress,
+          request.EASDeploymentDate,
+          request.EASExpirationDate,
+          request.dataKey,
+          JSON.stringify(acknowledgement)
+        );
+        const DBresult = await this.EAS_Database.writeEAS(this.directoryID, request, DTLresult.data.txHash);
+        debug('EASDeployment(2): ' + util.inspect(DTLresult));
+        debug('EASDeployment(2): ' + util.inspect(DBresult));
+        const LOGresult = await this.ATL_Database.writeAuditTrailLog(
+          this.directoryID,
+          request.dataCertificate,
+          new Date(),
+          DTLresult.message,
+          DTLresult.data.txHash
+        );
+        debug('EASDeployment(2): ' + util.inspect(LOGresult));
+        return DBresult;
+      } else {
+        debug('EASDeployment(3): ' + 'The directory ID does not exist.');
+        throw Error('The directory ID does not exist.');
+      }
+    } catch (error) {
+      debug('EASDeployment(4): ' + (error.message));
+      stack('EASDeployment(4): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  async parseSignedTX(request) {
+    debug('parseSignedTX(0)');
+    try {
+      const signedTX = JSON.parse(request.signedTX);
+      const transaction = await rlp.decode(signedTX.rawTransaction);
+      const transactionData = transaction[5].toString('hex');
+      const contractFuncNameHash = transactionData.slice(0, 8);
+      const decodedTransaction = await this._web3.eth.abi.decodeParameters(
+        transactionConfig[contractFuncNameHash].functionABI.inputs,
+        '0x' + transactionData.slice(8)
+      );
+
+      let result = {
+        data: {
+          userAddress: await this._web3.eth.accounts.recover(signedTX).toLowerCase(),
+          nonce: transaction[0].toString('hex'),
+          gasPrice: transaction[1].toString('hex'),
+          gas: transaction[2].toString('hex'),
+          to: transaction[3].toString('hex'),
+          value: transaction[4].toString('hex'),
+          contractFuncNameHash: contractFuncNameHash,
+          decodedTransaction: decodedTransaction
+        }
       };
+      debug('parseSignedTX(1): parameters: ' + util.inspect(result.data));
+      return result;
     } catch (error) {
-      debug('RetriveLocalDatabase(2): ' + (error.message));
-      stack('RetriveLocalDatabase(2): ' + (error.stack || error));
-      throw Error(error);
+      debug('parseSignedTX(2): ' + (error.message));
+      stack('parseSignedTX(2): ' + (error.stack || error));
+      return false;
     }
   }
 
-  // ----------------------------------------------------------
+  async writeTransactionData(request, txHash) {
+    debug('writeTransactionData(0)');
+    try {
+      if (transactionConfig[request.contractFuncNameHash]) {
+        switch (transactionConfig[request.contractFuncNameHash].functionABI.name) {
+          case "createDataEntry":
+            {
+              const decodedDataSummary = JSON.parse(request.decodedTransaction.dataSummary);
+              const inputData = {
+                dataCertificate: decodedDataSummary.dataCertificate,
+                dataOwnerCode: decodedDataSummary.dataOwnerCode,
+                dataEntryTitle: decodedDataSummary.dataEntryTitle,
+                dataDescription: decodedDataSummary.dataDescription,
+                dataAccessPath: decodedDataSummary.dataAccessPath,
+                dataOfferPrice: request.decodedTransaction.dataOfferPrice,
+                dataEntryCreationDate: request.decodedTransaction.dataEntryCreationDate,
+                dataEntryDueDate: request.decodedTransaction.dataEntryDueDate,
+                ageLowerBound: decodedDataSummary.ageLowerBound,
+                ageUpperBound: decodedDataSummary.ageUpperBound,
+                gender: decodedDataSummary.gender,
+              };
+              const result = await this.DIR_Database.writeDataEntry(
+                this.directoryID,
+                request.userID,
+                request.userAddress,
+                inputData,
+                txHash
+              );
+              return result;
+            }
+          case "deleteDataEntry":
+            {
+              const result = await this.DIR_Database.updateDataOfferStatus(this.directoryID, request.decodedTransaction.dataKey, txHash);
+              return result;
+            }
+          case "invokeEAS":
+            {
+              const result = await this.EASI_Database.writeEASInvocation(
+                this.directoryID,
+                new Date(),
+                request.decodedTransaction,
+                txHash
+              );
+              let EAS, validityStatus;
+              if (request.decodedTransaction.downloadStatus) {
+                const invocationInformation = request.decodedTransaction.invocationRecord.split(',');
+                const consumerID = invocationInformation[1];
+                debug('writeTransactionData(1):invokeEAS(1): ' + consumerID);
+                EAS = await this.EAS_Database.retrieveByConditions(this.directoryID, { dataConsumerID: consumerID, dataKey: request.decodedTransaction.dataKey }, { checkExpirationDate: false });
+                if (EAS.data.length && EAS.data[0].isConfirmed && EAS.data[0].isValid) {
+                  await this.EAS_Database.updateDownloadCount(this.directoryID, EAS.data[0].EASID);
+                  validityStatus = true;
+                } else {
+                  validityStatus = false;
+                }
+              } else {
+                if (EAS.data.length && EAS.data[0].isConfirmed && EAS.data[0].isValid) validityStatus = false;
+                else validityStatus = true;
+              }
+              debug('writeTransactionData(1):invokeEAS(2): Download status: ' + request.decodedTransaction.downloadStatus);
+              debug('writeTransactionData(1):invokeEAS(2): Validity status: ' + validityStatus);
+              result.message += ` Download status: ${request.decodedTransaction.downloadStatus}, Validity status: ${validityStatus}`;
+              return result;
+            }
+          case "revokeEASbyProvider":
+            {
+              const result = await this.EAS_Database.updateDataValidityStatus(this.directoryID, request.EASID, txHash);
+              return result;
+            }
+          case "revokeEASbyConsumer":
+            {
+              const result = await this.EAS_Database.updateDataValidityStatus(this.directoryID, request.EASID, txHash);
+              return result;
+            }
+        }
+      } else {
+        debug('writeTransactionData(1): ' + 'Unknown transaction hash');
+        throw Error('Unknown transaction hash');
+      }
+    } catch (error) {
+      debug('writeTransactionData(2): ' + (error.message));
+      stack('writeTransactionData(2): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
 
-  _createNewDirectory(web3) {
+  async getTransactionNonce(request) {
+    debug('getTransactionNonce(0): ');
+    try {
+      const nonce = await this._web3.eth.getTransactionCount(request.userAddress);
+      return '0x' + nonce.toString();
+    } catch (error) {
+      debug('getTransactionNonce(2): ' + (error.message));
+      stack('getTransactionNonce(2): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  async checkUserExist(request) {
+    debug('checkUserExist(0): ' + util.inspect(request));
+    try {
+      const result = await this.UR_Database.checkUserExist(
+        this.directoryID,
+        request.userType,
+        request.userID,
+        request.userAddress
+      );
+      debug('checkUserExist(1): ' + util.inspect(result));
+      return result;
+    } catch (error) {
+      debug('checkUserExist(2): ' + (error.message));
+      stack('checkUserExist(2): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  async checkContractExist(address) {
+    debug('checkContractExist(0): ' + util.inspect(address));
     return new Promise((resolve, reject) => {
-      const Contract = new web3.eth.Contract(this._config.Directory.CONTRACT_ABI);
-      Contract.deploy({
-        data: this._config.Directory.CONTRACT_BYTECODE
-      }).send({
-        from: this._config.COINBASE_ACCOUNT,
-        gas: this._config.GAS,
-        gasPrice: this._config.GAS_PRICE
-      }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'Directory creation transaction is received.',
-          txHash: hash
-        };
-        debug('_createNewDirectory(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'A new directory is created and deployed.',
-          txHash: receipt.transactionHash,
-          directoryID: receipt.contractAddress
-        };
-        debug('_createNewDirectory(2): ' + util.inspect(response));
-        stack('_createNewDirectory(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_createNewDirectory(3): ' + (error.message));
-        stack('_createNewDirectory(3): ' + (error.stack || error));
-        reject(error);
-      });
+      try {
+        this._web3.eth.getCode(address).then((addressCode) => {
+          if (addressCode === '0x') {
+            debug('checkContractExist(1): ' + 'address code is not found.');
+            resolve(false);
+          } else {
+            debug('checkContractExist(2): ' + 'address code is found.');
+            resolve(true);
+          }
+        });
+      } catch (error) {
+        debug('checkContractExist(2): ' + (error.message));
+        stack('checkContractExist(2): ' + (error.stack || error));
+        reject(Error(error.message));
+      }
     });
   }
 
-  _sendETHToUser(web3, userAddress, value) {
+  async checkAgreementInfo(request, dataEntry) {
+    debug('checkAgreementInfo(0): ' + util.inspect(request));
+    try {
+      if (dataEntry.data.length) {
+        if (dataEntry.data[0].isConfirmed) {
+          if (dataEntry.data[0].isOffered) {
+            if (request.userType === 'provider' && dataEntry.data[0].dataProviderAddress === request.userAddress) {
+              debug('checkAgreementInfo(1): true');
+              return (true);
+            } else if (request.userType === 'consumer' && dataEntry.data[0].dataProviderAddress === request.targetUserAddress) {
+              debug('checkAgreementInfo(1): true');
+              return (true);
+            } else {
+              debug('checkAgreementInfo(2): ' + 'The userID is not the data provider of the entry.');
+              throw Error('The userID is not the data provider of the entry.');
+            }
+          } else {
+            debug('checkAgreementInfo(3): ' + 'The data entry has been deleted.');
+            throw Error('The data entry has been deleted.');
+          }
+        } else {
+          debug('checkAgreementInfo(4): ' + 'Waiting for data entry to be confirmed');
+          throw Error('Waiting for data entry to be confirmed');
+        }
+      } else {
+        debug('checkAgreementInfo(4): ' + 'Wrong data certificate: the data entry does not exist.');
+        throw Error('Wrong data certificate: the data entry does not exist.');
+      }
+    } catch (error) {
+      debug('checkAgreementInfo(5): ' + (error.message));
+      stack('checkAgreementInfo(5): ' + (error.stack || error));
+      throw (Error(error.message));
+    }
+  }
+
+  async unlockEthAccount(address, password) {
+    debug('unlockEthAccount(0): ' + util.inspect(address));
+    debug('unlockEthAccount(0): ' + util.inspect(password));
+    if (address === '' || address === undefined) {
+      throw Error('The administration account is not defined.');
+    } else if (password === '' || password === undefined) {
+      throw Error('The administration account password is not defined.');
+    } else {
+      try {
+        const result = await this._web3.eth.personal.unlockAccount(address, password, 30);
+        debug('unlockEthAccount(1): ' + util.inspect(result));
+        return result;
+      } catch (error) {
+        debug('unlockEthAccount(2): ' + (error.message));
+        stack('unlockEthAccount(2): ' + (error.stack || error));
+        throw Error('Could not decrypt the key of administration account');
+      }
+    }
+  }
+
+  accessContract(name, address) {
+    debug('accessContract(0): ' + util.inspect(address));
+    debug('accessContract(0): ' + util.inspect(name));
     return new Promise((resolve, reject) => {
-      web3.eth.sendTransaction({
-        from: this._config.COINBASE_ACCOUNT,
-        to: userAddress,
-        value: web3.utils.toWei(value, "ether")
-      }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'ETH transaction is received.',
-          txHash: hash
-        };
-        debug('_sendETHToUser(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'ETH transaction is written.',
-          txHash: receipt.transactionHash
-        };
-        debug('_sendETHToUser(2): ' + util.inspect(response));
-        stack('_sendETHToUser(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_sendETHToUser(3): ' + (error.message));
-        stack('_sendETHToUser(3): ' + (error.stack || error));
-        reject(error);
-      });
+      const contract = new this._web3.eth.Contract(this._config[name].CONTRACT_ABI, address);
+      debug('accessContract(1): ' + util.inspect(contract._address));
+      if (contract._address) resolve(contract);
+      else reject(Error('Failed to access ' + name + ' contract'));
     });
   }
 
-  _registerProvider(contract, userAddress, userID) {
+  _register(userTypeIsProivder, contract, userID, userAddress) {
     return new Promise((resolve, reject) => {
-      contract.methods.registerProvider(userAddress, userID).send({
+      contract.methods.register(userTypeIsProivder, userID, userAddress).send({
         from: this._config.COINBASE_ACCOUNT,
-        gas: this._config.GAS,
+        gas: this._config.registerUser.GAS,
         gasPrice: this._config.GAS_PRICE
       }).on('transactionHash', (hash) => {
-        let response = {
+        const response = {
           message: 'UR transaction is received.',
-          txHash: hash
+          data: {
+            txHash: hash
+          }
         };
-        debug('_registerProvider(1): ' + util.inspect(response));
+        debug('_register(1): ' + util.inspect(response));
+        resolve(response);
       }).on('receipt', (receipt) => {
-        let response = {
+        const response = {
           message: 'UR transaction is written.',
-          txHash: receipt.transactionHash
+          data: {
+            txHash: receipt.transactionHash
+          }
         };
-        debug('_registerProvider(2): ' + util.inspect(response));
-        stack('_registerProvider(2): ' + util.inspect(receipt));
-        resolve(response);
+        debug('_register(2): ' + util.inspect(response));
+        stack('_register(2): ' + util.inspect(receipt));
+        //resolve(response);
       }).on('error', (error) => {
-        debug('_registerProvider(3): ' + (error.message));
-        stack('_registerProvider(3): ' + (error.stack || error));
+        debug('_register(3): ' + (error.message));
+        stack('_register(3): ' + (error.stack || error));
         reject(error);
       });
     });
   }
 
-  _registerConsumer(contract, userAddress, userID) {
+  _deployEAS(contract, consumer, EASDeploymentDate, EASExpirationDate, dataKey, agreement) {
     return new Promise((resolve, reject) => {
-      contract.methods.registerConsumer(userAddress, userID).send({
+      contract.methods.deployEAS(consumer, EASDeploymentDate, EASExpirationDate, dataKey, agreement).send({
         from: this._config.COINBASE_ACCOUNT,
-        gas: this._config.GAS,
+        gas: this._config.deployEAS.GAS,
         gasPrice: this._config.GAS_PRICE
       }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'UR transaction is received.',
-          txHash: hash
-        };
-        debug('_registerConsumer(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'UR transaction is written.',
-          txHash: receipt.transactionHash
-        };
-        debug('_registerConsumer(2): ' + util.inspect(response));
-        stack('_registerConsumer(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_registerConsumer(3): ' + (error.message));
-        stack('_registerConsumer(3): ' + (error.stack || error));
-        reject(error);
-      });
-    });
-  }
-
-  _createDataEntry(contract, userAddress, offerPrice, dataCertificate, dataDescription, dueDate) {
-    return new Promise((resolve, reject) => {
-      const myDate = new Date();
-      contract.methods.createDataEntry(offerPrice, dataCertificate, dataDescription, dueDate, myDate.getTime()).send({
-        from: userAddress,
-        gas: this._config.GAS,
-        gasPrice: this._config.GAS_PRICE
-      }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'DEC transaction is received.',
-          txHash: hash
-        };
-        debug('_createDataEntry(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'DEC transaction is written.',
-          txHash: receipt.transactionHash
-        };
-        debug('_createDataEntry(2): ' + util.inspect(response));
-        stack('_createDataEntry(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_createDataEntry(3): ' + (error.message));
-        stack('_createDataEntry(3): ' + (error.stack || error));
-        reject(error);
-      });
-    });
-  }
-
-  _deleteDataEntry(contract, userAddress, dataCertificate) {
-    return new Promise((resolve, reject) => {
-      contract.methods.deleteDataEntry(dataCertificate).send({
-        from: userAddress,
-        gas: this._config.GAS,
-        gasPrice: this._config.GAS_PRICE
-      }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'DED transaction is received.',
-          txHash: hash
-        };
-        debug('_deleteDataEntry(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'DED transaction is written.',
-          txHash: receipt.transactionHash
-        };
-        debug('_deleteDataEntry(2): ' + util.inspect(response));
-        stack('_deleteDataEntry(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_deleteDataEntry(3): ' + (error.message));
-        stack('_deleteDataEntry(3): ' + (error.stack || error));
-        reject(error);
-      });
-    });
-  }
-
-  _deployEAS(contract, consumer, EASExpiration, dataCertificate, providerAgreement, consumerAgreement) {
-    return new Promise((resolve, reject) => {
-      contract.methods.deployEAS(consumer, EASExpiration, dataCertificate, providerAgreement, consumerAgreement).send({
-        from: this._config.COINBASE_ACCOUNT,
-        gas: this._config.GAS,
-        gasPrice: this._config.GAS_PRICE
-      }).on('transactionHash', (hash) => {
-        let response = {
+        const response = {
           message: 'EASD transaction is received.',
-          txHash: hash
+          data: {
+            txHash: hash
+          }
         };
         debug('_deployEAS(1): ' + util.inspect(response));
+        resolve(response);
       }).on('receipt', (receipt) => {
-        let response = {
+        const response = {
           message: 'EASD transaction is written.',
           txHash: receipt.transactionHash,
         };
         debug('_deployEAS(2): ' + util.inspect(response));
         stack('_deployEAS(2): ' + util.inspect(receipt));
-        resolve(response);
       }).on('error', (error) => {
         debug('_deployEAS(3): ' + (error.message));
         stack('_deployEAS(3): ' + (error.stack || error));
@@ -1057,300 +1299,68 @@ module.exports = class DXserver {
     });
   }
 
-  _invokeEAS(contract, provider, dataCertificate, invocationLog) {
+  _sendSignedTX(name, rawTransaction) {
     return new Promise((resolve, reject) => {
-      contract.methods.invokeEAS(dataCertificate, invocationLog).send({
-        from: provider,
-        gas: this._config.GAS,
-        gasPrice: this._config.GAS_PRICE
-      }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'EASI transaction is received.',
-          txHash: hash
-        };
-        debug('_invokeEAS(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'EASI transaction is written.',
-          txHash: receipt.transactionHash
-        };
-        debug('_invokeEAS(2): ' + util.inspect(response));
-        stack('_invokeEAS(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_invokeEAS(3): ' + (error.message));
-        stack('_invokeEAS(3): ' + (error.stack || error));
-        reject(error);
-      });
-    });
-  }
-
-  _revokeEASbyProvider(contract, provider, dataCertificate, consumer) {
-    return new Promise((resolve, reject) => {
-      contract.methods.revokeEASbyProvider(dataCertificate, consumer).send({
-        from: provider,
-        gas: this._config.GAS,
-        gasPrice: this._config.GAS_PRICE
-      }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'EASR transaction (provider) is received.',
-          txHash: hash
-        };
-        debug('_revokeEASbyProvider(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'EASR transaction (provider) is written.',
-          txHash: receipt.transactionHash
-        };
-        debug('_revokeEASbyProvider(2): ' + util.inspect(response));
-        stack('_revokeEASbyProvider(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_revokeEASbyProvider(3): ' + (error.message));
-        stack('_revokeEASbyProvider(3): ' + (error.stack || error));
-        reject(error);
-      });
-    });
-  }
-
-  _revokeEASbyConsumer(contract, consumer, dataCertificate) {
-    return new Promise((resolve, reject) => {
-      contract.methods.revokeEASbyConsumer(dataCertificate).send({
-        from: consumer,
-        gas: this._config.GAS,
-        gasPrice: this._config.GAS_PRICE
-      }).on('transactionHash', (hash) => {
-        let response = {
-          message: 'EASR transaction (consumer) is received.',
-          txHash: hash
-        };
-        debug('_revokeEASbyConsumer(1): ' + util.inspect(response));
-      }).on('receipt', (receipt) => {
-        let response = {
-          message: 'EASR transaction (consumer) is written.',
-          txHash: receipt.transactionHash
-        };
-        debug('_revokeEASbyConsumer(2): ' + util.inspect(response));
-        stack('_revokeEASbyConsumer(2): ' + util.inspect(receipt));
-        resolve(response);
-      }).on('error', (error) => {
-        debug('_revokeEASbyConsumer(3): ' + (error.message));
-        stack('_revokeEASbyConsumer(3): ' + (error.stack || error));
-        reject(error);
-      });
-    });
-  }
-
-  // -----------------------------------
-
-  async checkUserIdExist(request) {
-    if (request.directoryID === '' || request.userID === '' || request.userType === '' ||
-      request.directoryID === undefined || request.userID === undefined || request.userType === undefined) {
-      throw Error('directoryID or userID or userType is not defined.');
-    } else {
-      try {
-        if (request.userType === 'provider') {
-          let result = await providerDatabase.checkUserExistByUserId(request.directoryID, request.userID);
-          debug('checkUserIdExist(1): ' + util.inspect(result));
-          return result;
-        } else if (request.userType === 'consumer') {
-          let result = await consumerDatabase.checkUserExistByUserId(request.directoryID, request.userID);
-          debug('checkUserIdExist(2): ' + util.inspect(result));
-          return result;
-        }
-      } catch (error) {
-        debug('checkUserIdExist(3): ' + (error.message));
-        stack('checkUserIdExist(3): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  async createNewEthAccount(request) {
-    if (request.userID === '' || request.password === '' ||
-      request.userID === undefined || request.password === undefined) {
-      throw Error('userID or password is not defined.');
-    } else {
-      try {
-        let passphrase = request.userID + request.password;
-        let web3 = await this.connectAndObtainWeb3Obj();
-        let result = await web3.eth.personal.newAccount(passphrase);
-        debug('createNewEthAccount(1): ' + util.inspect(result));
-        return result;
-      } catch (error) {
-        debug('createNewEthAccount(2): ' + (error.message));
-        stack('createNewEthAccount(2): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  async storeUserAccountInLocal(request, newUserAddress) {
-    if (request.directoryID === '' || request.userType === '' ||
-      request.userID === '' || newUserAddress === '' ||
-      request.directoryID === undefined || request.userType === undefined ||
-      request.userID === undefined || newUserAddress === undefined) {
-      throw Error('directoryID or userID or userType or newUserAddress is not defined.');
-    } else {
-      try {
-        if (request.userType === 'provider') {
-          if (!await providerDatabase.checkUserExistByUserAddress(request.directoryID, newUserAddress)) {
-            let result = await providerDatabase.writeUserInfo(request.directoryID, request.userID, newUserAddress);
-            let response = {
-              message: result
-            };
-            debug('storeUserAccountInLocal(1): ' + util.inspect(response));
-            return response;
-          } else {
-            throw Error('This provider address is already registered.');
-          }
-        } else if (request.userType === 'consumer') {
-          if (!await consumerDatabase.checkUserExistByUserAddress(request.directoryID, newUserAddress)) {
-            let result = await consumerDatabase.writeUserInfo(request.directoryID, request.userID, newUserAddress);
-            let response = {
-              message: result
-            };
-            debug('storeUserAccountInLocal(2): ' + util.inspect(response));
-            return response;
-          } else {
-            throw Error('This consumer address is already registered.');
-          }
-        } else {
-          throw Error('The userType is not defined.');
-        }
-      } catch (error) {
-        debug('storeUserAccountInLocal(3): ' + (error.message));
-        stack('storeUserAccountInLocal(3): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  async unlockEthAccount(address, password) {
-    if (address === '' || address === undefined) {
-      throw Error('account is not defined.');
-    } else if (password === '' || password === undefined) {
-      throw Error('password is not defined.');
-    } else {
-      try {
-        let web3 = await this.connectAndObtainWeb3Obj();
-        let result = await web3.eth.personal.unlockAccount(address, password, 90);
-        debug('unlockEthAccount(1): ' + util.inspect(result));
-        return result;
-      } catch (error) {
-        debug('unlockEthAccount(2): ' + (error.message));
-        stack('unlockEthAccount(2): ' + (error.stack || error));
-        throw Error('Could not decrypt key with given password');
-      }
-    }
-  }
-
-  checkContractExist(address, name) {
-    return new Promise((resolve, reject) => {
-      let web3 = this._web3;
-      web3.eth.getCode(address).then((addressCode) => {
-        if (addressCode === '0x') {
-          debug('checkContractExist(1): ' + 'address code is not found.');
-          reject(Error('Wrong ' + name + 'ID'));
-        }
-        else {
-          debug('checkContractExist(2): ' + 'address code is found.');
-          resolve(true);
-        }
-      });
-    });
-  }
-
-  connectAndObtainWeb3Obj() {
-    return new Promise((resolve, reject) => {
-      let web3 = this._web3;
-      debug('connectAndObtainWeb3Obj(1): ' + util.inspect(web3.version));
-      if (!web3.version) reject(Error('Web3 object error'));
-      else resolve(web3);
-    });
-  }
-
-  connectAndAccessDirectoryContract(address) {
-    return new Promise((resolve, reject) => {
-      if (this._config.Directory.CONTRACT_ABI === '' || this._config.Directory.CONTRACT_ABI === undefined) {
-        reject(Error('CONTRACT_ABI is not defined.'));
-      } else if (address === '' || address === undefined) {
-        reject(Error('CONTRACT_ADDR is not defined.'));
-      } else {
-        let web3 = this._web3;
-        let contract = new web3.eth.Contract(this._config.Directory.CONTRACT_ABI, address);
-        debug('connectAndAccessDirectoryContract(1): ' + util.inspect(contract._address));
-        resolve(contract);
-      }
-    });
-  }
-
-  connectAndAccessEASContract(address) {
-    return new Promise((resolve, reject) => {
-      if (this._config.EAS.CONTRACT_ABI === '' || this._config.EAS.CONTRACT_ABI === undefined) {
-        reject(Error('CONTRACT_ABI is not defined.'));
-      } else if (address === '' || address === undefined) {
-        reject(Error('CONTRACT_ADDR is not defined.'));
-      } else {
-        let web3 = this._web3;
-        let contract = new web3.eth.Contract(this._config.EAS.CONTRACT_ABI, address);
-        debug('connectAndAccessEASContract(1): ' + util.inspect(contract._address));
-        resolve(contract);
-      }
-    });
-  }
-
-
-
-  // -----------------------------------------------------------
-
-  async retrieveEthAccounts() {
-    try {
-      let web3 = await this.connectAndObtainWeb3Obj();
-      let result = await web3.eth.getAccounts();
-      debug('retrieveEthAccounts(1): ' + util.inspect(result));
-      return result;
-    } catch (error) {
-      debug('retrieveEthAccounts(2): ' + (error.message));
-      stack('retrieveEthAccounts(2): ' + (error.stack || error));
-      throw Error(error);
-    }
-  }
-
-  async generateKeystoreFile(request) {
-    if (request.userID === '' || request.password === '' ||
-      request.userID === undefined || request.password === undefined) {
-      throw Error('userID or password is not defined.');
-    } else {
-      try {
-        let passphrase = request.password;
-        let web3 = await this.connectAndObtainWeb3Obj();
-        let account = await web3.eth.accounts.create();
-        debug('generateKeystoreFile(1): ' + util.inspect(account.address));
-        let keyStore = await web3.eth.accounts.encrypt(account.privateKey, passphrase);
-        let result = await this.writeKeystoreFile(keyStore);
-        debug('generateKeystoreFile(2): ' + util.inspect(result));
-        return result;
-      } catch (error) {
-        debug('generateKeystoreFile(3): ' + (error.message));
-        stack('generateKeystoreFile(3): ' + (error.stack || error));
-        throw Error(error);
-      }
-    }
-  }
-
-  writeKeystoreFile(keyStore) {
-    const gethNodePath = './storages/';
-    return new Promise((resolve, reject) => {
-      fs.writeFile(gethNodePath + 'UTC--' +
-        (new Date()).toISOString().replace(':', '-') +
-        '--' + keyStore.address, keyStore, (error) => {
-          if (error) reject(error);
-          else {
-            debug('generateKeystoreFile(1): the keystore file has been saved.');
-            resolve('New account is created successfully.');
-          }
+      this._web3.eth.sendSignedTransaction(rawTransaction)
+        .on('transactionHash', (hash) => {
+          const response = {
+            message: name + ' transaction is received.',
+            data: {
+              txHash: hash
+            }
+          };
+          debug('_sendSignedTX(1): ' + util.inspect(response));
+          resolve(response);
+        }).on('receipt', (receipt) => {
+          const response = {
+            message: name + ' transaction is written.',
+            data: {
+              txHash: receipt.transactionHash
+            }
+          };
+          debug('_sendSignedTX(2): ' + util.inspect(response));
+          stack('_sendSignedTX(2): ' + util.inspect(receipt));
+          //resolve(response);
+        }).on('error', (error) => {
+          debug('_sendSignedTX(3): ' + (error.message));
+          stack('_sendSignedTX(3): ' + (error.stack || error));
+          reject(error);
         });
     });
   }
+
+  async removeDueEntryAndExpiredEAS(timeInterval) {
+    debug('deleteExpirationData(0): ');
+    try {
+      setInterval(this.deleteDueEntry, timeInterval);
+      setInterval(this.revokeExpiredEAS, timeInterval);
+    } catch (error) {
+      debug('deleteExpirationData(1): ' + (error.message));
+      stack('deleteExpirationData(1): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  async deleteDueEntry() {
+    debug('deleteDueEntry(0): ');
+    try {
+      await this.DIR_Database.updateDataOfferStatus(this.directoryID, 0, 0, { deleteDueEntry: true });
+    } catch (error) {
+      debug('deleteDueEntry(1): ' + (error.message));
+      stack('deleteDueEntry(1): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
+  async revokeExpiredEAS() {
+    debug('revokeExpiredEAS(0): ');
+    try {
+      await this.EAS_Database.updateDataValidityStatus(this.directoryID, 0, 0, { revokeExpiredEAS: true });
+    } catch (error) {
+      debug('revokeExpiredEAS(1): ' + (error.message));
+      stack('revokeExpiredEAS(1): ' + (error.stack || error));
+      throw Error(error.message);
+    }
+  }
+
 };

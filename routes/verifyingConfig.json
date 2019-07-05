@@ -1,0 +1,96 @@
+{
+  "MedXconfiguration": {
+    "configVerifyingList": [
+      "COINBASE_ACCOUNT",
+      "ETHRPC_IP_PORT",
+      "GAS_PRICE",
+      "BLOCK_TRACE_OFFSET"
+    ],
+    "gasVerifyingList": [
+      "createDirectory",
+      "registerUser",
+      "createDataEntry",
+      "deleteDataEntry",
+      "deployEAS",
+      "invokeEAS",
+      "revokeEASbyProvider",
+      "revokeEASbyConsumer"
+    ],
+    "directoryVerifyingList": [
+      "CONTRACT_ADDR",
+      "CONTRACT_ABI",
+      "CONTRACT_BYTECODE"
+    ],
+    "EASVerifyingList": [
+      "CONTRACT_ABI",
+      "CONTRACT_BYTECODE"
+    ]
+  },
+  "UserRegistration": {
+    "verifyingList": [
+      "userType",
+      "userID",
+      "userAddress",
+      "userPassword"
+    ]
+  },
+  "UserLogin": {
+    "verifyingList": [
+      "userType",
+      "userID",
+      "userPassword"
+    ]
+  },
+  "DataEntryCreation": {
+    "verifyingList": [
+      "signedTX"
+    ]
+  },
+  "DataEntryDeletion": {
+    "verifyingList": [
+      "signedTX"
+    ]
+  },
+  "DataEntryAgreement": {
+    "verifyingList": [
+      "message",
+      "messageHash",
+      "v",
+      "r",
+      "s",
+      "signature"
+    ]
+  },
+  "DataEntryAgreementRejection": {
+    "verifyingList": [
+      "message",
+      "messageHash",
+      "v",
+      "r",
+      "s",
+      "signature"
+    ]
+  },
+  "EASInvocation": {
+    "verifyingList": [
+      "signedTX"
+    ]
+  },
+  "EASRevocation": {
+    "verifyingList": [
+      "signedTX"
+    ]
+  },
+  "DataEntryRetrievalByUserID": {
+    "verifyingList": [
+      "userType",
+      "userID"
+    ]
+  },
+  "AuditTrailLogRetrieval": {
+    "verifyingList": [
+      "userType",
+      "userID"
+    ]
+  }
+}

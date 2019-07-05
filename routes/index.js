@@ -18,127 +18,207 @@
 //
 // Author: Alison Lin <yslin1013@gmail.com>
 //         Wesley Liu <Wesley_Liu@htc.com>
+
 "use strict";
 
-const express = require('express');
+// import modules
+
+import express from 'express'
+import jwt from '../lib/jwt.js'
+
+const debug = require('debug')('medx-server:index');
+const EthMedXserver = require('../controllers/eth-dxservice');
+const MedXverifier = require('./dx-verifier');
+const SyncManager = require('../controllers/sync-manager');
+const Socket = require('../controllers/socket.js').default;
+
+// import configs
+
+import apiList from './apiList.json'
+import option from '../option.json'
+
+const DXconfig = 'production' === process.env.NODE_ENV
+  ? require('../controllers/medx-config.json')
+  : require('../controllers/medx-dev-config.json')
+
+// initialize servers
+
+if (!MedXverifier.MedXconfiguration(DXconfig)) {
+  throw (Error('Lack of system configurations'));
+}
+
+const socketServer = new Socket(DXconfig.SOCKET_PORT);
+
+const MedXserver = new EthMedXserver(DXconfig, socketServer);
+MedXserver.removeDueEntryAndExpiredEAS(DXconfig.REMOVE_INTERVAL);
+
+const SyncBlockchain = new SyncManager(DXconfig, MedXserver, socketServer);
+SyncBlockchain.syncDirectoryStorage();
+
+// helper function
+
+const errorMessageIndicator = message => {
+  return [
+    "The user has been registered.",
+    "Wrong user ID or password."
+  ].includes(message) ? message : "Error returned from DDS"
+}
+
+// configure routers
+
 const router = express.Router();
 
-const debug = require('debug')('dxserver:index');
-const apiList = require('./apiList.json');
+const tokenless_routes = [
+  apiList.DataQueryService,
+  apiList.UserLogin,
+  apiList.UserRegistration
+]
 
-const EthDXserver = require('../controllers/eth-dxservice');
-const DXconfig = require('../controllers/dxservice-config.json');
-const DXserver = new EthDXserver(DXconfig);
+router.use(async (req, res, next) => {
+  if (tokenless_routes.includes(req._parsedUrl.pathname))
+    return next()
 
-router.get('/', async function (req, res, next) {
-  res.render('index');
-});
+  const match = req.headers.authorization && req.headers.authorization.match(/^Bearer (.+)$/)
 
-router.post(apiList.CreateNewDirectory, async function (req, res, next) {
+  if (match) {
+    try {
+
+      res.locals.user_info = (await jwt.verify(match[1], option.secret)).data
+
+      return next()
+
+    } catch (err) {
+      return res.status(403).json({ error: 'Invalid authorization' })
+    }
+  }
+
+  res.status(403).json({ error: 'Invalid authorization' })
+})
+
+router.post(apiList.UserRegistration, async (req, res, next) => {
   try {
-    const response = await DXserver.CreateNewDirectory();
-    debug(response); res.status(200).json({ result: response });
+    await MedXverifier.verifyFieldValues('UserRegistration', req.body);
+    const response = await MedXserver.UserRegistration(req.body);
+    debug(response); res.status(200).json({ result: await jwt.sign(response, option.secret) });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.post(apiList.UserRegistration, async function (req, res, next) {
+router.post(apiList.UserLogin, async (req, res, next) => {
   try {
-    const response = await DXserver.UserRegistration(req.body);
-    debug(response); res.status(200).json({ result: response });
+    await MedXverifier.verifyFieldValues('UserLogin', req.body);
+    const response = await MedXserver.UserLogin(req.body);
+    debug(response); res.status(200).json({ result: await jwt.sign(response, option.secret) });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.post(apiList.DataEntryCreation, async function (req, res, next) {
+router.post(apiList.DataEntryCreation, async (req, res, next) => {
   try {
-    const response = await DXserver.DataEntryCreation(req.body);
+    await MedXverifier.verifyFieldValues('DataEntryCreation', req.body);
+    const response = await MedXserver.DataEntryCreation(req.body);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.post(apiList.DataEntryDeletion, async function (req, res, next) {
+router.post(apiList.DataEntryDeletion, async (req, res, next) => {
   try {
-    const response = await DXserver.DataEntryDeletion(req.body);
+    await MedXverifier.verifyFieldValues('DataEntryDeletion', req.body);
+    const response = await MedXserver.DataEntryDeletion(req.body);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.post(apiList.EASDeployment, async function (req, res, next) {
+router.post(apiList.DataEntryAgreement, async (req, res, next) => {
   try {
-    const response = await DXserver.EASDeployment(req.body);
+    await MedXverifier.verifyFieldValues('DataEntryAgreement', req.body);
+    const response = await MedXserver.DataEntryAgreement(req.body);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.post(apiList.EASInvocation, async function (req, res, next) {
+router.post(apiList.DataEntryAgreementRejection, async (req, res, next) => {
   try {
-    const response = await DXserver.EASInvocation(req.body);
+    await MedXverifier.verifyFieldValues('DataEntryAgreementRejection', req.body);
+    const response = await MedXserver.DataEntryAgreementRejection(req.body);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.post(apiList.EASRevocation, async function (req, res, next) {
+router.post(apiList.EASRevocation, async (req, res, next) => {
   try {
-    const response = await DXserver.EASRevocation(req.body);
+    await MedXverifier.verifyFieldValues('EASRevocation', req.body);
+    const response = await MedXserver.EASRevocation(req.body);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.get(apiList.DataEntryCount, async function (req, res, next) {
+router.post(apiList.EASInvocation, async (req, res, next) => {
   try {
-    const response = await DXserver.DataEntryCount(req.query);
+    await MedXverifier.verifyFieldValues('EASInvocation', req.body);
+    const response = await MedXserver.EASInvocation(req.body);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.get(apiList.DataEntryRetrievalByIndex, async function (req, res, next) {
+router.get(apiList.DataEntryCount, async (req, res, next) => {
   try {
-    const response = await DXserver.DataEntryRetrievalByIndex(req.query);
+    const response = await MedXserver.DataEntryCount(req.query);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.get(apiList.DataEntryRetrievalByDataCertificate, async function (req, res, next) {
+router.get(apiList.DataEntryRetrievalByUserID, async (req, res, next) => {
   try {
-    const response = await DXserver.DataEntryRetrievalByDataCertificate(req.query);
+    await MedXverifier.verifyFieldValues('DataEntryRetrievalByUserID', req.query);
+    const response = await MedXserver.DataEntryRetrievalByUserID(req.query);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.get(apiList.EASRetrieval, async function (req, res, next) {
+router.post(apiList.AuditTrailLogRetrieval, async (req, res, next) => {
   try {
-    const response = await DXserver.EASRetrieval(req.query);
+    await MedXverifier.verifyFieldValues('AuditTrailLogRetrieval', req.body);
+    const response = await MedXserver.AuditTrailLogRetrieval(req.body);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 
-router.get(apiList.RetriveLocalDatabase, async function (req, res, next) {
+router.get(apiList.DataQueryService, async (req, res, next) => {
   try {
-    const response = await DXserver.RetriveLocalDatabase();
+    const response = await MedXserver.DataQueryService(req.query);
     debug(response); res.status(200).json({ result: response });
   } catch (error) {
-    debug(error); res.status(400).json({ error: error.message });
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
+  }
+});
+
+router.get(apiList.TransactionNonce, async (req, res, next) => {
+  try {
+    const response = await MedXserver.getTransactionNonce(req.query);
+    debug(response); res.status(200).send(response);
+  } catch (error) {
+    debug(error); res.status(400).json({ error: errorMessageIndicator(error.message) });
   }
 });
 

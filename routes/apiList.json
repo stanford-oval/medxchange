@@ -1,14 +1,16 @@
 {
   "CreateNewDirectory": "/directory/new/",
   "UserRegistration": "/user/register/",
+  "UserLogin": "/user/login/",
   "DataEntryCreation": "/entry/create/",
   "DataEntryDeletion": "/entry/delete/",
-  "EASDeployment": "/eas/deploy/",
+  "DataEntryAgreement": "/entry/agreement/",
+  "DataEntryAgreementRejection": "/agreement/reject/",
+  "DataEntryCount": "/entry/count/",
+  "DataEntryRetrievalByUserID": "/entry/",
+  "DataQueryService": "/query/",
+  "AuditTrailLogRetrieval": "/audit/",
   "EASInvocation": "/eas/invoke/",
   "EASRevocation": "/eas/revoke/",
-  "DataEntryCount": "/entry/count/",
-  "DataEntryRetrievalByIndex": "/entry/index/",
-  "DataEntryRetrievalByDataCertificate": "/entry/dctf/",
-  "EASRetrieval": "/eas/sid/",
-  "RetriveLocalDatabase": "/database/local/"
+  "TransactionNonce": "/tx/nonce/"
 }

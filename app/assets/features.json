@@ -1,0 +1,27 @@
+[
+  {
+    "title": "DATA DIRECTORY",
+    "description": "Shared data can be discovered and searched across distributed ledgers using blockchain technology.",
+    "icon": "folder open"
+  },
+  {
+    "title": "DATA CERTIFICATION",
+    "description": "Data entry returned from a search query must contain a certificate ensuring that the entry has been validated.",
+    "icon": "certificate"
+  },
+  {
+    "title": "ACCESS AUTHORIZATION",
+    "description": "Authorization includes data access control and an executable agreement script to fetch the data.",
+    "icon": "lock"
+  },
+  {
+    "title": "ACCESS REVOCATION",
+    "description": "The access rights to data items can be revoked that the change with low latency can be reflected.",
+    "icon": "close"
+  },
+  {
+    "title": "AUDITABILITY",
+    "description": "All transactions on all data items are logged on the ledger for open and transparent auditing.",
+    "icon": "check"
+  }
+]

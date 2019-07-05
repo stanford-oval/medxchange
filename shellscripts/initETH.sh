@@ -1,1 +1,1 @@
-cd ~/dxserver && geth --datadir ./nodes/data/ init ./nodes/genesis.json
+geth --datadir ../nodes/data/ init ../nodes/genesis.json

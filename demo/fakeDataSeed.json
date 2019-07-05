@@ -1,0 +1,389 @@
+{
+  "userID": [
+    "Anna Sthesia ",
+    "Paul Molive ",
+    "Anna Mull ",
+    "Gail Forcewind",
+    "Paige Turner",
+    "Bob Frapples",
+    "Walter Melon",
+    "Nick R.Bocker",
+    "Barb Ackue",
+    "Buck Kinnear",
+    "Greta Life",
+    "Ira Membrit",
+    "Shonda Leer",
+    "Brock Lee",
+    "Maya Didas",
+    "Pete Sariya",
+    "Monty Carlo",
+    "Sal Monella",
+    "Sue Vaneer",
+    "Cliff Hanger",
+    "Barb Dwyer",
+    "Terry Aki",
+    "Cory Ander",
+    "Robin Banks",
+    "Jimmy Changa",
+    "Barry Wine",
+    "Wilma Mumduya",
+    "Buster Hyman",
+    "Poppa Cherry",
+    "Zack Lee",
+    "Don Stairs",
+    "Saul T.Balls",
+    "Peter Pants",
+    "Hal Appeno",
+    "Otto Matic",
+    "Moe Fugga",
+    "Graham Cracker",
+    "Tom Foolery",
+    "Al Dente",
+    "Bud Wiser",
+    "Polly Tech",
+    "Holly Graham",
+    "Frank N.Stein",
+    "Cam L.Toe",
+    "Pat Agonia",
+    "Tara Zona",
+    "Barry Cade",
+    "Phil Anthropist",
+    "Marvin Gardens",
+    "Phil Harmonic",
+    "Arty Ficial",
+    "Will Power",
+    "Donatella Nobatti",
+    "Juan Annatoo",
+    "Stew Gots",
+    "Anna Rexia",
+    "Bill Emia",
+    "Curt N.Call",
+    "Max Emum",
+    "Minnie Mum",
+    "Bill Yerds",
+    "Hap E.Birthday",
+    "Matt Innae",
+    "Polly Science",
+    "Tara Misu",
+    "Ed U.Cation",
+    "Gerry Atric",
+    "Kerry Oaky",
+    "Midge Itz",
+    "Gabe Lackmen",
+    "Mary Christmas",
+    "Dan Druff",
+    "Jim Nasium",
+    "Angie O.Plasty",
+    "Ella Vator",
+    "Sal Vidge",
+    "Bart Ender",
+    "Artie Choke,",
+    "Hans Olo",
+    "Marge Arin",
+    "Hugh Briss",
+    "Gene Poole",
+    "Ty Tanic",
+    "Manuel Labor",
+    "Lynn Guini",
+    "Claire Voyant",
+    "Peg Leg",
+    "Jack E.Sack",
+    "Marty Graw",
+    "Ash Wednesday",
+    "Olive Yu",
+    "Gene Jacket",
+    "Tom Atoe",
+    "Doug Out",
+    "Sharon Needles",
+    "Beau Tie",
+    "Serj Protector",
+    "Marcus Down",
+    "Warren Peace",
+    "Bud Jet",
+    "Barney Cull",
+    "Marion Gaze",
+    "Eric Shun",
+    "Mal Practice",
+    "Ed Itorial",
+    "Rick Shaw",
+    "Paul Issy",
+    "Ben Effit",
+    "Kat E.Gory",
+    "Justin Case",
+    "Louie Z.Ana",
+    "Aaron Ottix",
+    "Ty Ballgame",
+    "Anne Fibbiyon",
+    "Barry Cuda",
+    "John Withawind",
+    "Joe Thyme",
+    "Mary Goround",
+    "Marge Arita",
+    "Frank Senbeans",
+    "Bill Dabear",
+    "Ray Zindaroof",
+    "Adam Zapple",
+    "Lewis N.Clark",
+    "Matt Schtick",
+    "Sue Shee",
+    "Chris P.Bacon",
+    "Doug Lee Duckling",
+    "Mason Protesters",
+    "Sil Antro",
+    "Zack Lee",
+    "Chris P.Bacon",
+    "Greta Life",
+    "Ed Itorial",
+    "Marty Graw",
+    "Bud Wiser",
+    "Tara Zona",
+    "Mason Protesters",
+    "Bill Dabear",
+    "Barry Cuda",
+    "John Withawind",
+    "Moe Fugga",
+    "Manuel Labor",
+    "Paul Molive ",
+    "Curt N.Call",
+    "Aaron Ottix",
+    "Cory Ander",
+    "Paul Issy",
+    "Pete Sariya",
+    "Mal Practice",
+    "Hugh Briss",
+    "Midge Itz",
+    "Ty Tanic",
+    "Ella Vator",
+    "Matt Innae",
+    "Bill Dabear",
+    "Polly Tech",
+    "Ty Ballgame",
+    "Gene Jacket",
+    "Sil Antro",
+    "Ira Membrit",
+    "Jack E.Sack",
+    "Bob Frapples",
+    "Angie O.Plasty",
+    "Jim Nasium",
+    "Stew Gots",
+    "Frank N.Stein",
+    "Anna Sthesia ",
+    "Brock Lee"
+  ],
+  "dataAccessPath": [
+    "https://www.ntuh.gov.tw/deepqmedx/file/",
+    "https://www.cgmh.org.tw/deepqmedx/file/",
+    "https://www.cch.org.tw/deepqmedx/file/"
+  ],
+  "disease": {
+    "Lung cancer": {
+      "Categories": [
+        "Small cell lung cancer",
+        "Lung Adenocarcinoma",
+        "Squameous cell cancer",
+        "Large cell cancer"
+      ],
+      "Staging": [
+        "Stage 0",
+        "Stage IA",
+        "Stage IB",
+        "Stage IIA",
+        "Stage IIB",
+        "Stage IIIA",
+        "Stage IIIB",
+        "Stage IV"
+      ],
+      "Tumor": [
+        "Tis",
+        "T1",
+        "T1a",
+        "T1b",
+        "T2",
+        "T2a",
+        "T2b",
+        "T3",
+        "T4"
+      ],
+      "LymphNode": [
+        "N0",
+        "N1",
+        "N2",
+        "N3"
+      ],
+      "Metastasis": [
+        "M0",
+        "M1",
+        "M1a",
+        "M1b"
+      ]
+    },
+    "Colorectal cancer": {
+      "Categories": [
+        "Adenocarcinoma in situ",
+        "Adenocarcinoma",
+        "Mucinous carcinoma",
+        "Signet ring cell carcinoma",
+        "Squamous cell carcinoma",
+        "Adenosquamous carcinoma",
+        "Undifferentiated carcinoma"
+      ],
+      "Staging": [
+        "Stage 0",
+        "Stage I",
+        "Stage IIA",
+        "Stage IIB",
+        "Stage IIC",
+        "Stage IIIA",
+        "Stage IIIB",
+        "Stage IIIC",
+        "Stage IVA",
+        "Stage IVB"
+      ],
+      "Dukes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "MAC": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "C1",
+        "C2",
+        "C3"
+      ]
+    },
+    "Hepatitis": {
+      "Type": ["A", "B", "C", "D", "E"]
+    }
+  },
+  "smartFilterList": {
+    "Lung cancer": {
+      "Categories": [{
+          "title": "Small cell lung cancer",
+          "value": "Small cell lung cancer"
+        },
+        {
+          "title": "Lung Adenocarcinoma",
+          "value": "Lung Adenocarcinoma"
+        },
+        {
+          "title": "Squameous cell cancer",
+          "value": "Squameous cell cancer"
+        },
+        {
+          "title": "Large cell cancer",
+          "value": "Large cell cancer"
+        }
+      ],
+      "Staging": [{
+          "title": "Stage 0",
+          "value": "Stage 0"
+        },
+        {
+          "title": "Stage IA",
+          "value": "Stage IA"
+        },
+        {
+          "title": "Stage IB",
+          "value": "Stage IB"
+        },
+        {
+          "title": "Stage IIA",
+          "value": "Stage IIA"
+        },
+        {
+          "title": "Stage IIB",
+          "value": "Stage IIB"
+        },
+        {
+          "title": "Stage IIIA",
+          "value": "Stage IIIA"
+        },
+        {
+          "title": "Stage IIIB",
+          "value": "Stage IIIB"
+        },
+        {
+          "title": "Stage IV",
+          "value": "Stage IV"
+        }
+      ]
+    },
+    "Colorectal cancer": {
+      "Categories": [{
+          "title": "Adenocarcinoma in situ",
+          "value": "Adenocarcinoma in situ"
+        },
+        {
+          "title": "Adenocarcinoma",
+          "value": "Adenocarcinoma"
+        },
+        {
+          "title": "Mucinous carcinoma",
+          "value": "Mucinous carcinoma"
+        },
+        {
+          "title": "Signet ring cell carcinoma",
+          "value": "Signet ring cell carcinoma"
+        },
+        {
+          "title": "Squamous cell carcinoma",
+          "value": "Squamous cell carcinoma"
+        },
+        {
+          "title": "Adenosquamous carcinoma",
+          "value": "Adenosquamous carcinoma"
+        },
+        {
+          "title": "Undifferentiated carcinoma",
+          "value": "Undifferentiated carcinoma"
+        }
+      ],
+      "Staging": [{
+          "title": "Stage 0",
+          "value": "Stage 0"
+        },
+        {
+          "title": "Stage I",
+          "value": "Stage I"
+        },
+        {
+          "title": "Stage IIA",
+          "value": "Stage IIA"
+        },
+        {
+          "title": "Stage IIB",
+          "value": "Stage IIB"
+        },
+        {
+          "title": "Stage IIC",
+          "value": "Stage IIC"
+        },
+        {
+          "title": "Stage IIIA",
+          "value": "Stage IIIA"
+        },
+        {
+          "title": "Stage IIIB",
+          "value": "Stage IIIB"
+        },
+        {
+          "title": "Stage IIIC",
+          "value": "Stage IIIC"
+        },
+        {
+          "title": "Stage IVA",
+          "value": "Stage IVA"
+        },
+        {
+          "title": "Stage IVB",
+          "value": "Stage IVB"
+        }
+      ]
+    }
+  },
+  "keystoreUser": ["AlisonLin", "WesleyLiu", "ChihYenLiu", "JayZheng", "DoctorWei", "DoctorMei", "ProfChang", "ProfLiao"],
+  "gender": ["Male", "Female", "Both"]
+}

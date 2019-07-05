@@ -1,0 +1,20 @@
+// appearance
+
+@mixin background-size($arg...)
+  -moz-background-size: $arg
+  -o-background: $arg
+  -webkit-background-size: $arg
+  background-size: $arg
+
+@mixin layout($height, $width, $padding: 0, $margin: 0)
+  height: $height
+  margin: $margin
+  padding: $padding
+  width: $width
+
+@mixin locate($position, $top: auto, $right: auto, $bottom: auto, $left: auto)
+  bottom: $bottom
+  left: $left
+  position: $position
+  right: $right
+  top: $top

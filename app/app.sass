@@ -1,0 +1,81 @@
+@import '~semantic-ui/dist/components/button.min.css'
+@import '~semantic-ui/dist/components/checkbox.min.css'
+@import '~semantic-ui/dist/components/dropdown.min.css'
+@import '~semantic-ui/dist/components/form.min.css'
+@import '~semantic-ui/dist/components/header.min.css'
+@import '~semantic-ui/dist/components/icon.min.css'
+@import '~semantic-ui/dist/components/input.min.css'
+@import '~semantic-ui/dist/components/label.min.css'
+@import '~semantic-ui/dist/components/list.min.css'
+@import '~semantic-ui/dist/components/popup.min.css'
+@import '~semantic-ui/dist/components/table.min.css'
+
+@import '~vue-slider-component/theme/antd.css'
+
+body
+  +layout(auto, 100%)
+
+  box-sizing: border-box
+  font-family: sans-serif
+  min-height: 100vh
+  min-width: 21rem
+  padding-bottom: 3rem
+  position: relative
+
+  a#cert-generator
+    bottom: 1rem
+    font-style: italic
+    position: fixed
+    right: 1rem
+
+button.ui.loading.button
+
+  &::after, &::before
+    box-sizing: inherit
+
+div.ui.loading i
+
+  &::after, &::before
+    box-sizing: border-box
+
+#v-browser, #v-main
+
+  .buttons
+    display: flex
+    justify-content: center
+
+    button
+      margin: 0 1rem
+
+      &:only-child
+        margin: 0
+
+  .dialog__content
+    max-width: 45rem!important
+    width: 45rem
+
+.nav
+  align-items: center
+  box-sizing: border-box
+  display: flex
+  justify-content: flex-end
+  padding: 1rem
+
+.slider-opt
+  display: flex
+
+  .input
+    display: flex
+    flex: 1
+    flex-direction: column
+    margin: 1rem
+
+    label
+      font-size: .8rem
+      font-style: italic
+      font-weight: bold
+      margin-bottom: .3rem
+
+.vue-slider
+  margin: 0 auto
+  max-width: 80%!important

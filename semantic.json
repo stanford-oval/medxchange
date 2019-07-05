@@ -1,0 +1,23 @@
+{
+  "admin": false,
+  "autoInstall": true,
+  "base": "node_modules/semantic-ui/",
+  "paths": {
+    "clean": "dist/",
+    "output": {
+      "compressed": "dist/components/",
+      "packaged": "dist/",
+      "themes": "dist/themes/",
+      "uncompressed": "dist/components/"
+    },
+    "source": {
+      "config": "src/theme.config",
+      "definitions": "src/definitions/",
+      "site": "src/site/",
+      "themes": "src/themes/"
+    }
+  },
+  "permission": false,
+  "rtl": false,
+  "version": "2.4.2"
+}

@@ -1,0 +1,134 @@
+{
+  "d1f5bb1c": {
+    "functionABI": {
+      "name": "register",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "userTypeIsProivder",
+          "type": "bool"
+        },
+        {
+          "name": "userID",
+          "type": "string"
+        },
+        {
+          "name": "userAddress",
+          "type": "address"
+        }
+      ]
+    }
+  },
+  "42b1938e": {
+    "functionABI": {
+      "name": "createDataEntry",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "dataKey",
+          "type": "string"
+        },
+        {
+          "name": "dataSummary",
+          "type": "string"
+        },
+        {
+          "name": "dataOfferPrice",
+          "type": "uint256"
+        },
+        {
+          "name": "dataEntryDueDate",
+          "type": "uint256"
+        },
+        {
+          "name": "dataEntryCreationDate",
+          "type": "uint256"
+        }
+      ]
+    }
+  },
+  "67006e1c": {
+    "functionABI": {
+      "name": "deleteDataEntry",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "dataKey",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "c1d33f41": {
+    "functionABI": {
+      "name": "deployEAS",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "consumerAddress",
+          "type": "address"
+        },
+        {
+          "name": "EASDeploymentDate",
+          "type": "uint256"
+        },
+        {
+          "name": "EASExpirationDate",
+          "type": "uint256"
+        },
+        {
+          "name": "dataKey",
+          "type": "string"
+        },
+        {
+          "name": "acknowledgement",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "67592ddd": {
+    "functionABI": {
+      "name": "invokeEAS",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "dataKey",
+          "type": "string"
+        },
+        {
+          "name": "invocationRecord",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "c578fe2c": {
+    "functionABI": {
+      "name": "revokeEASbyProvider",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "dataKey",
+          "type": "string"
+        },
+        {
+          "name": "consumerAddress",
+          "type": "address"
+        }
+      ]
+    }
+  },
+  "000c5696": {
+    "functionABI": {
+      "name": "revokeEASbyConsumer",
+      "type": "function",
+      "inputs": [
+        {
+          "name": "dataKey",
+          "type": "string"
+        }
+      ]
+    }
+  }
+}
