@@ -29,7 +29,7 @@ $ npm install
 $ npm start
 ```
 
-## Opening the Webpage using Web Browser
+## Opening Web Browser to Access Web UI
 ```
 https://(localhost or IP):9000
 ```
