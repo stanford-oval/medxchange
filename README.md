@@ -20,6 +20,7 @@ $ vi option.json
  "secret": "DeepQStandfordOvalXXX"
 }
 ```
+You can set your won "secret" value.
 
 ## Installation & Running MedXchange
 
